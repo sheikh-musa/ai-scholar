@@ -23,7 +23,7 @@ import os
 import signal
 
 # --- Config ---
-BOT_TOKEN = "8385088525:AAEUulSwRW226oFGjZqGdVpoJuwaDah-7_g"
+BOT_TOKEN = os.environ.get("MIZAN_BOT_TOKEN", "")
 SUPABASE_URL = "https://tscuymavysscrvoberrr.supabase.co"
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzY3V5bWF2eXNzY3J2b2JlcnJyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMjEzOTQsImV4cCI6MjA4OTg5NzM5NH0.qO3XH34pDVhlxDRcKs_TBaOJtoxGiAJGBLfGpThzyDw"
