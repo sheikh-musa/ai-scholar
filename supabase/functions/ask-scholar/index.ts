@@ -502,6 +502,33 @@ async function searchAyatILike(
   return [];
 }
 
+interface TafsirFtsRow {
+  ayah_id: string;
+  surah_number: number;
+  ayah_number: number;
+  arabic_text: string;
+  english_translation: string;
+  translator: string;
+  scholar_name: string;
+  source_work: string;
+  english_text: string;
+  output_tier: string;
+  rank: number;
+}
+
+/** Full-text search on tafsir_entries.english_text, ayah-joined */
+async function searchTafsirFTS(
+  query: string,
+  limit = 5
+): Promise<TafsirFtsRow[]> {
+  const { data, error } = await supabase.rpc("search_tafsir_fts", {
+    query,
+    lim: limit,
+  });
+  if (error || !data || data.length === 0) return [];
+  return data as TafsirFtsRow[];
+}
+
 // ---------------------------------------------------------------------------
 // Hadith search functions
 // ---------------------------------------------------------------------------
@@ -652,6 +679,8 @@ interface MatchEntry {
     source: string;
     text: string;
     tier: string;
+    matched_passage: string | null;       // NEW — FTS-matched excerpt (null if not from FTS)
+    matched_passage_tier: string | null;  // NEW — tier marker for the matched passage
   }[];
 }
 
@@ -687,9 +716,10 @@ function buildSuccessResponse(
 ) {
   const tiersUsed = new Set<string>();
   for (const m of matches) {
-    tiersUsed.add("quoted");
+    if (m.arabic) tiersUsed.add("quoted");  // Quoted is only for verbatim Quran text
     for (const t of m.tafsir) {
       tiersUsed.add(t.tier);
+      if (t.matched_passage_tier) tiersUsed.add(t.matched_passage_tier);
     }
   }
   if (hadithMatches.length > 0) {
@@ -728,8 +758,41 @@ function buildMatches(
       source: t.source_work,
       text: t.english_text,
       tier: t.output_tier,
+      matched_passage: null,
+      matched_passage_tier: null,
     })),
   }));
+}
+
+/**
+ * Build MatchEntry[] from tafsir-FTS results. Groups rows by ayah_id so one
+ * ayah with multiple matching scholars produces a single MatchEntry with
+ * multiple tafsir[] entries, each carrying a matched_passage.
+ */
+function buildMatchesFromTafsirFTS(rows: TafsirFtsRow[]): MatchEntry[] {
+  const byAyah = new Map<string, MatchEntry>();
+  for (const r of rows) {
+    if (!byAyah.has(r.ayah_id)) {
+      byAyah.set(r.ayah_id, {
+        surah: r.surah_number,
+        ayah: r.ayah_number,
+        surah_name: getSurahName(r.surah_number),
+        arabic: r.arabic_text,
+        translation: r.english_translation,
+        translator: r.translator,
+        tafsir: [],
+      });
+    }
+    byAyah.get(r.ayah_id)!.tafsir.push({
+      scholar: r.scholar_name,
+      source: r.source_work,
+      text: r.english_text,
+      tier: r.output_tier,
+      matched_passage: r.english_text,
+      matched_passage_tier: r.output_tier,
+    });
+  }
+  return Array.from(byAyah.values());
 }
 
 // ---------------------------------------------------------------------------
@@ -821,8 +884,15 @@ Deno.serve(async (req: Request) => {
     const joinedKeywords = keywords.join(" ");
     let ayat = await searchAyatFTS(joinedKeywords, 3);
 
-    // ILIKE fallback if FTS returns nothing
-    if (ayat.length === 0) {
+    // Stage 4b: Full-text search on tafsir commentary.
+    // Runs unconditionally so strong tafsir matches can surface even when
+    // ayat-FTS already returned results. Results are merged; tafsir-only
+    // ayat (not already in `ayat`) are appended.
+    const tafsirFtsRows = await searchTafsirFTS(joinedKeywords, 5);
+    const tafsirMatches = buildMatchesFromTafsirFTS(tafsirFtsRows);
+
+    // ILIKE fallback if BOTH FTS stages returned nothing
+    if (ayat.length === 0 && tafsirMatches.length === 0) {
       ayat = await searchAyatILike(keywords, 3);
     }
 
@@ -834,10 +904,18 @@ Deno.serve(async (req: Request) => {
     const hadithMatches = buildHadithMatches(hadithResults);
 
     // Return combined results (Quran + Hadith)
-    if (ayat.length > 0 || hadithMatches.length > 0) {
+    if (ayat.length > 0 || tafsirMatches.length > 0 || hadithMatches.length > 0) {
       const ayahIds = ayat.map((a) => a.id);
       const tafsirMap = ayat.length > 0 ? await fetchTafsirBatch(ayahIds) : {};
-      const matches = buildMatches(ayat, tafsirMap);
+      const ayatMatches = buildMatches(ayat, tafsirMap);
+
+      // De-duplicate: skip tafsir-FTS matches for ayat already in ayatMatches
+      const seenAyat = new Set(ayatMatches.map((m) => `${m.surah}:${m.ayah}`));
+      const tafsirOnly = tafsirMatches.filter(
+        (m) => !seenAyat.has(`${m.surah}:${m.ayah}`)
+      );
+
+      const matches = [...ayatMatches, ...tafsirOnly];
       return new Response(
         JSON.stringify(buildSuccessResponse(rawQuery, matches, null, hadithMatches)),
         {
