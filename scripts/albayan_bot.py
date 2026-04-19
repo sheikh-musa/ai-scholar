@@ -123,25 +123,28 @@ def tg_request(method, data=None):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def send_message(chat_id, text):
-    """Send a Telegram message, falling back to plain text if Markdown fails."""
+def send_message(chat_id, text, parse_mode=None):
+    """Send a Telegram message.
+
+    Defaults to plain text (parse_mode=None) because format_response
+    emits plain text that routinely contains characters Telegram's
+    Markdown parser rejects (e.g. underscores in transliterated Arabic
+    like ``al-Ṭabarī`` or ``_ibadah``, unbalanced ``*`` from punctuation).
+    Callers sending static Markdown-formatted messages (WELCOME_MESSAGE,
+    HELP_MESSAGE) must opt in by passing ``parse_mode="Markdown"``.
+    """
     truncated = text[:4000] + "..." if len(text) > 4000 else text
+    payload = {
+        "chat_id": chat_id,
+        "text": truncated,
+        "disable_web_page_preview": True,
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
-        tg_request("sendMessage", {
-            "chat_id": chat_id,
-            "text": truncated,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        })
-    except Exception:
-        try:
-            tg_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": truncated,
-                "disable_web_page_preview": True,
-            })
-        except Exception as e:
-            print(f"  Failed to send message: {e}")
+        tg_request("sendMessage", payload)
+    except Exception as e:
+        print(f"  Failed to send message: {e}")
 
 
 def send_typing(chat_id):
@@ -337,11 +340,11 @@ def main():
 
                 # Handle commands
                 if text.lower() in ("/start", "/start@albayan_bot"):
-                    send_message(chat_id, WELCOME_MESSAGE)
+                    send_message(chat_id, WELCOME_MESSAGE, parse_mode="Markdown")
                     continue
 
                 if text.lower() in ("/help", "/help@albayan_bot"):
-                    send_message(chat_id, HELP_MESSAGE)
+                    send_message(chat_id, HELP_MESSAGE, parse_mode="Markdown")
                     continue
 
                 # Send typing indicator
