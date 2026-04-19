@@ -208,6 +208,37 @@ def search_quran(keywords, limit=5):
         return {"results": rows}
 
 
+def search_tafsir(keywords, limit=5):
+    """Full-text search on tafsir_entries.english_text via search_tafsir_fts RPC.
+    Returns up to `limit` rows (capped at 10) shaped for the Claude context block:
+    {surah, ayah, arabic, english_translation, scholar, source, english_text, tier}.
+    Skips rows whose english_text starts with '[Arabic tafsir' (untranslated placeholder).
+    """
+    try:
+        rows = supabase_rpc("search_tafsir_fts", {"query": keywords, "lim": min(limit, 10)})
+    except Exception:
+        return {"results": []}
+    if not rows:
+        return {"results": []}
+
+    results = []
+    for r in rows:
+        passage = r.get("english_text") or ""
+        if passage.startswith("[Arabic tafsir"):
+            continue
+        results.append({
+            "surah": r["surah_number"],
+            "ayah": r["ayah_number"],
+            "arabic": r["arabic_text"],
+            "english_translation": r["english_translation"],
+            "scholar": r["scholar_name"],
+            "source": r["source_work"],
+            "english_text": passage,
+            "tier": r["output_tier"],
+        })
+    return {"results": results}
+
+
 def count_mentions(word):
     """Count verses mentioning a word."""
     rows = supabase_get("ayat", {
@@ -496,6 +527,26 @@ def gather_context(question):
                     vdata = lookup_verse(r["surah_number"], r["ayah_number"])
                     context_parts.append(f"TAFSIR for {r['surah_number']}:{r['ayah_number']}:\n{json.dumps(vdata, ensure_ascii=False, indent=2)}")
 
+        # Tafsir FTS — surface scholar-attributed passages that matched the query
+        # directly. Runs even when Quran FTS succeeded, because tafsir may add
+        # signal (e.g., the matched passage addresses the query more directly
+        # than the ayah translation).
+        if _ctx_size(context_parts) < MAX_CONTEXT:
+            tdata = search_tafsir(fts_query, limit=5)
+            if tdata["results"]:
+                entries = []
+                for hit in tdata["results"]:
+                    entries.append(
+                        f"Surah {hit['surah']} : Ayah {hit['ayah']}\n"
+                        f"Scholar: {hit['scholar']} ({hit['source']})\n"
+                        f"Tier: {hit['tier']}\n"
+                        f"Passage: {hit['english_text']}"
+                    )
+                context_parts.append(
+                    "TAFSIR MATCHED PASSAGES (scholar-attributed, from tafsir_entries FTS):\n"
+                    + "\n\n".join(entries)
+                )
+
         # Hadith FTS (always search if question wants it, or as supplement)
         has_hadith = any("HADITH" in p for p in context_parts)
         if not has_hadith and _ctx_size(context_parts) < MAX_CONTEXT:
@@ -538,6 +589,7 @@ RULES:
 - Include Arabic text when showing Quranic verses.
 - End with a reflective question (practice off-ramp) to move knowledge toward action.
 - If the data doesn't answer the question, say so honestly.
+- When quoting a tafsir passage, append `[<Tier>: <scholar>, <source>]` verbatim.
 
 FORMATTING (Telegram Markdown):
 - Use these tier badges inline, never on their own line:

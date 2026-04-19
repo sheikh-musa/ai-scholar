@@ -123,25 +123,28 @@ def tg_request(method, data=None):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def send_message(chat_id, text):
-    """Send a Telegram message, falling back to plain text if Markdown fails."""
+def send_message(chat_id, text, parse_mode=None):
+    """Send a Telegram message.
+
+    Defaults to plain text (parse_mode=None) because format_response
+    emits plain text that routinely contains characters Telegram's
+    Markdown parser rejects (e.g. underscores in transliterated Arabic
+    like ``al-Ṭabarī`` or ``_ibadah``, unbalanced ``*`` from punctuation).
+    Callers sending static Markdown-formatted messages (WELCOME_MESSAGE,
+    HELP_MESSAGE) must opt in by passing ``parse_mode="Markdown"``.
+    """
     truncated = text[:4000] + "..." if len(text) > 4000 else text
+    payload = {
+        "chat_id": chat_id,
+        "text": truncated,
+        "disable_web_page_preview": True,
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
-        tg_request("sendMessage", {
-            "chat_id": chat_id,
-            "text": truncated,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        })
-    except Exception:
-        try:
-            tg_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": truncated,
-                "disable_web_page_preview": True,
-            })
-        except Exception as e:
-            print(f"  Failed to send message: {e}")
+        tg_request("sendMessage", payload)
+    except Exception as e:
+        print(f"  Failed to send message: {e}")
 
 
 def send_typing(chat_id):
@@ -175,92 +178,107 @@ def call_ask_scholar(query, chat_id):
 # --- Response formatting ---
 
 def format_response(data):
-    """Format the Edge Function JSON response into a Telegram message."""
-    status = data.get("status", "error")
+    """Format the ask-scholar Edge Function JSON into a Telegram message.
 
-    if status == "scholar_gate":
+    Edge Function response shape:
+      { question, scholar_gate: bool, matches: [MatchEntry], hadith_matches: [...],
+        practice_offramp: str, tiers_used: [str], message?: str, suggested_resources?: [str] }
+    MatchEntry:
+      { surah, ayah, surah_name, arabic, translation, translator,
+        tafsir: [{ scholar, source, text, tier,
+                   matched_passage, matched_passage_tier }] }
+    """
+    if data.get("error"):
+        return ERROR_MESSAGE
+
+    if data.get("scholar_gate"):
         return SCHOLAR_GATE_MESSAGE
 
-    if status == "no_match":
+    matches = data.get("matches") or []
+    hadith_matches = data.get("hadith_matches") or []
+
+    if not matches and not hadith_matches:
         return NO_MATCH_MESSAGE
 
-    if status == "error":
-        return ERROR_MESSAGE
-
-    # status == "ok" -- format the full response
-    resp = data.get("response", {})
-    if not resp:
-        return ERROR_MESSAGE
-
     parts = ["--- Al-Bayan ---\n"]
+    sources = []
 
-    # Arabic text
-    arabic = resp.get("arabic", "")
-    if arabic:
-        parts.append(arabic)
-        parts.append("")
+    for m in matches:
+        surah_num = m.get("surah", "")
+        ayah_num = m.get("ayah", "")
+        surah_name = m.get("surah_name", "")
+        arabic = m.get("arabic", "")
+        translation = m.get("translation", "")
+        translator = m.get("translator", "")
 
-    # Translation
-    translation = resp.get("translation", "")
-    translator = resp.get("translator", "")
-    surah_name = resp.get("surah_name", "")
-    surah_num = resp.get("surah_number", "")
-    ayah_num = resp.get("ayah_number", "")
-
-    if translation:
-        parts.append(f'"{translation}"')
-        ref_parts = []
-        if translator:
-            ref_parts.append(translator)
-        if surah_name:
-            ref_parts.append(f"{surah_name} ({surah_num}:{ayah_num})")
-        elif surah_num:
-            ref_parts.append(f"{surah_num}:{ayah_num}")
-        if ref_parts:
-            parts.append(f"-- {', '.join(ref_parts)}")
-        parts.append(f"[Quoted: Quran {surah_num}:{ayah_num}]")
-        parts.append("")
-
-    # Tafsir
-    tafsir_list = resp.get("tafsir", [])
-    if tafsir_list:
-        parts.append("--- Tafsir ---\n")
-        for t in tafsir_list:
-            scholar = t.get("scholar_name", "Unknown")
-            source = t.get("source_work", "")
-            text = t.get("english_text", "")
-            tier = t.get("output_tier", "paraphrased")
-
-            if not text or text.startswith("[Arabic tafsir"):
-                continue
-
-            header = scholar
-            if source:
-                header += f" ({source})"
-            parts.append(f"{header}:")
-            parts.append(f'"{text}"')
-
-            if tier == "quoted":
-                parts.append(f"[Quoted: {scholar}]")
-            else:
-                parts.append(f"[Paraphrased: {scholar}]")
+        if arabic:
+            parts.append(arabic)
             parts.append("")
 
-    # Practice off-ramp
-    practice = resp.get("practice", "")
+        if translation:
+            parts.append(f'"{translation}"')
+            ref_bits = []
+            if translator:
+                ref_bits.append(translator)
+            ref_bits.append(f"{surah_name} ({surah_num}:{ayah_num})" if surah_name else f"{surah_num}:{ayah_num}")
+            parts.append(f"-- {', '.join(ref_bits)}")
+            parts.append(f"[Quoted: Quran {surah_num}:{ayah_num}]")
+            parts.append("")
+
+        if surah_num and ayah_num:
+            sources.append(f"Quran {surah_num}:{ayah_num}")
+
+        tafsir_list = m.get("tafsir") or []
+        if tafsir_list:
+            parts.append("--- Tafsir ---\n")
+            for t in tafsir_list:
+                scholar = t.get("scholar", "Unknown")
+                source = t.get("source", "")
+                matched = t.get("matched_passage")
+                if matched:
+                    tier = (t.get("matched_passage_tier") or "paraphrased").capitalize()
+                    parts.append(f"{scholar} ({source}) — matched passage:")
+                    parts.append(f'"{matched}"')
+                    parts.append(f"[{tier}: {scholar}, {source}]")
+                    parts.append("")
+                else:
+                    text = t.get("text", "")
+                    if not text or text.startswith("[Arabic tafsir"):
+                        continue
+                    tier = (t.get("tier") or "paraphrased").capitalize()
+                    parts.append(f"{scholar} ({source}):")
+                    parts.append(f'"{text}"')
+                    parts.append(f"[{tier}: {scholar}]")
+                    parts.append("")
+
+                if source and source not in sources:
+                    sources.append(source)
+
+    if hadith_matches:
+        parts.append("--- Hadith ---\n")
+        for h in hadith_matches:
+            coll = h.get("collection", "unknown")
+            num = h.get("hadith_number", "")
+            grading = h.get("grading") or ""
+            narrator = h.get("narrator") or ""
+            english = h.get("english", "")
+            header_bits = [coll]
+            if num:
+                header_bits.append(f"#{num}")
+            if grading:
+                header_bits.append(grading)
+            if narrator:
+                header_bits.append(narrator)
+            parts.append(f"{' · '.join(header_bits)}:")
+            parts.append(f'"{english}"')
+            parts.append(f"[Quoted: Hadith, {coll} #{num}]")
+            parts.append("")
+
+    practice = data.get("practice_offramp")
     if practice:
         parts.append("--- Practice ---\n")
         parts.append(practice)
         parts.append("")
-
-    # Sources and transparency footer
-    sources = []
-    if surah_num and ayah_num:
-        sources.append(f"Quran {surah_num}:{ayah_num}")
-    for t in tafsir_list:
-        sw = t.get("source_work", "")
-        if sw and sw not in sources:
-            sources.append(sw)
 
     parts.append("---")
     if sources:
@@ -269,7 +287,6 @@ def format_response(data):
         "Transparency: All content above is sourced. "
         "Tier markers [] indicate origin."
     )
-
     return "\n".join(parts)
 
 
@@ -323,11 +340,11 @@ def main():
 
                 # Handle commands
                 if text.lower() in ("/start", "/start@albayan_bot"):
-                    send_message(chat_id, WELCOME_MESSAGE)
+                    send_message(chat_id, WELCOME_MESSAGE, parse_mode="Markdown")
                     continue
 
                 if text.lower() in ("/help", "/help@albayan_bot"):
-                    send_message(chat_id, HELP_MESSAGE)
+                    send_message(chat_id, HELP_MESSAGE, parse_mode="Markdown")
                     continue
 
                 # Send typing indicator
