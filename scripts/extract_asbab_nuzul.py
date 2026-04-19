@@ -30,14 +30,24 @@ BATCH_SIZE = int(sys.argv[sys.argv.index("--batch-size") + 1]) if "--batch-size"
 START_FROM = int(sys.argv[sys.argv.index("--start-from") + 1]) if "--start-from" in sys.argv else 0
 
 
-def supabase_get(table, params):
+def supabase_get(table, params, limit=1000):
+    """Fetch from Supabase REST. Auto-paginates if limit > page_size."""
     qs = "&".join(f"{k}={v}" for k, v in params.items())
-    url = f"{SUPABASE_URL}/rest/v1/{table}?{qs}"
-    req = urllib.request.Request(url, headers={
-        "apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
-    })
-    with urllib.request.urlopen(req) as resp:
-        return json.loads(resp.read().decode())
+    all_rows = []
+    page_size = min(limit, 1000)
+    offset = 0
+    while True:
+        url = f"{SUPABASE_URL}/rest/v1/{table}?{qs}&limit={page_size}&offset={offset}"
+        req = urllib.request.Request(url, headers={
+            "apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+        })
+        with urllib.request.urlopen(req) as resp:
+            rows = json.loads(resp.read().decode())
+        all_rows.extend(rows)
+        if len(rows) < page_size or len(all_rows) >= limit:
+            break
+        offset += page_size
+    return all_rows[:limit]
 
 
 def supabase_post(table, data):
@@ -56,7 +66,7 @@ def extract_asbab(surah, ayah, tafsir_entries):
     tafsir_text = ""
     for t in tafsir_entries:
         scholar = t.get("scholar_name", "")
-        text = t.get("text", "")[:800]
+        text = t.get("english_text", "")[:800]
         tafsir_text += f"\n[{scholar}]:\n{text}\n"
 
     prompt = f"""You are extracting asbab al-nuzul (reasons/circumstances of revelation) from tafsir commentary.
@@ -117,7 +127,7 @@ def main():
     all_ayat = supabase_get("ayat", {
         "select": "id,surah_number,ayah_number",
         "order": "surah_number,ayah_number",
-    })
+    }, limit=7000)
     total = len(all_ayat)
     print(f"Total ayat: {total}")
 
@@ -136,12 +146,12 @@ def main():
             print(f"  {surah}:{ayah_num} — ", end="", flush=True)
 
             try:
+                ayah_id = ayah["id"]
                 tafsir = supabase_get("tafsir_entries", {
-                    "surah_number": f"eq.{surah}",
-                    "ayah_number": f"eq.{ayah_num}",
-                    "select": "scholar_name,text",
-                    "scholar_name": "in.(Ibn Kathir,Al-Qurtubi)",
-                })
+                    "ayah_id": f"eq.{ayah_id}",
+                    "select": "scholar_name,english_text",
+                    "scholar_name": "in.(Ibn%20Kathir,Al-Qurtubi)",
+                }, limit=10)
 
                 if not tafsir:
                     print("skip (no tafsir)")

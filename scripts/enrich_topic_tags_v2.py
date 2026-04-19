@@ -96,14 +96,22 @@ def get_tafsir(surah, ayah):
 
 def get_surrounding(surah, ayah):
     """Get 2 ayat before and after for context."""
-    rows = supabase_get("ayat", {
-        "surah_number": f"eq.{surah}",
-        "ayah_number": f"gte.{max(1, ayah-2)}",
-        "ayah_number": f"lte.{ayah+2}",
-        "select": "ayah_number,english_translation",
-        "order": "ayah_number",
-    })
-    return rows
+    try:
+        lo = max(1, ayah - 2)
+        hi = ayah + 2
+        url = (
+            f"{SUPABASE_URL}/rest/v1/ayat"
+            f"?and=(surah_number.eq.{surah},ayah_number.gte.{lo},ayah_number.lte.{hi})"
+            f"&select=ayah_number,english_translation"
+            f"&order=ayah_number"
+        )
+        req = urllib.request.Request(url, headers={
+            "apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+        })
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return []
 
 
 def get_ayah_meta(surah, ayah):

@@ -1,5 +1,5 @@
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -502,6 +502,109 @@ async function searchAyatILike(
   return [];
 }
 
+// ---------------------------------------------------------------------------
+// Hadith search functions
+// ---------------------------------------------------------------------------
+
+interface HadithRow {
+  id: string;
+  collection_id: string;
+  hadith_number: string;
+  section_name: string | null;
+  arabic_text: string | null;
+  english_text: string;
+  grading: string | null;
+  narrator: string | null;
+  collection_name?: string;
+}
+
+/** Search hadiths by keyword ILIKE on english_text */
+async function searchHadiths(
+  keywords: string[],
+  limit = 3
+): Promise<HadithRow[]> {
+  // Try multi-keyword search first (more specific)
+  const longKeywords = keywords.filter((k) => k.length > 3);
+  if (longKeywords.length >= 2) {
+    // Build an AND-style search: all keywords must appear
+    const patterns = longKeywords.slice(0, 4);
+    let query = supabase
+      .from("hadiths")
+      .select("id, collection_id, hadith_number, section_name, arabic_text, english_text, grading, narrator");
+
+    for (const p of patterns) {
+      query = query.ilike("english_text", `%${p}%`);
+    }
+
+    const { data, error } = await query.limit(limit);
+    if (!error && data && data.length > 0) {
+      return data as HadithRow[];
+    }
+  }
+
+  // Fallback: single keyword search with longest keywords first
+  const sorted = [...longKeywords].sort((a, b) => b.length - a.length);
+  for (const kw of sorted) {
+    const { data, error } = await supabase
+      .from("hadiths")
+      .select("id, collection_id, hadith_number, section_name, arabic_text, english_text, grading, narrator")
+      .ilike("english_text", `%${kw}%`)
+      .limit(limit);
+
+    if (!error && data && data.length > 0) {
+      return data as HadithRow[];
+    }
+  }
+  return [];
+}
+
+/** Resolve collection names for hadith results */
+async function resolveCollectionNames(
+  hadiths: HadithRow[]
+): Promise<HadithRow[]> {
+  const collectionIds = [...new Set(hadiths.map((h) => h.collection_id))];
+  if (collectionIds.length === 0) return hadiths;
+
+  const { data, error } = await supabase
+    .from("hadith_collections")
+    .select("id, name")
+    .in("id", collectionIds);
+
+  if (error || !data) return hadiths;
+
+  const nameMap: Record<string, string> = {};
+  for (const c of data) {
+    nameMap[c.id] = c.name;
+  }
+
+  return hadiths.map((h) => ({
+    ...h,
+    collection_name: nameMap[h.collection_id] || "unknown",
+  }));
+}
+
+interface HadithMatchEntry {
+  collection: string;
+  hadith_number: string;
+  section: string | null;
+  narrator: string | null;
+  grading: string | null;
+  arabic: string | null;
+  english: string;
+}
+
+function buildHadithMatches(hadiths: HadithRow[]): HadithMatchEntry[] {
+  return hadiths.map((h) => ({
+    collection: h.collection_name || "unknown",
+    hadith_number: h.hadith_number,
+    section: h.section_name,
+    narrator: h.narrator,
+    grading: h.grading,
+    arabic: h.arabic_text,
+    english: h.english_text,
+  }));
+}
+
 /** Fetch tafsir entries for a list of ayah IDs */
 async function fetchTafsirBatch(
   ayahIds: string[]
@@ -579,14 +682,18 @@ function buildNoMatchResponse(question: string) {
 function buildSuccessResponse(
   question: string,
   matches: MatchEntry[],
-  topicName: string | null
+  topicName: string | null,
+  hadithMatches: HadithMatchEntry[] = []
 ) {
   const tiersUsed = new Set<string>();
   for (const m of matches) {
-    tiersUsed.add("quoted"); // Quran text is always quoted
+    tiersUsed.add("quoted");
     for (const t of m.tafsir) {
       tiersUsed.add(t.tier);
     }
+  }
+  if (hadithMatches.length > 0) {
+    tiersUsed.add("hadith");
   }
 
   const practice =
@@ -598,6 +705,7 @@ function buildSuccessResponse(
     question,
     scholar_gate: false,
     matches,
+    hadith_matches: hadithMatches,
     practice_offramp: practice,
     tiers_used: Array.from(tiersUsed),
   };
@@ -628,7 +736,7 @@ function buildMatches(
 // Main handler
 // ---------------------------------------------------------------------------
 
-serve(async (req: Request) => {
+Deno.serve(async (req: Request) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: CORS_HEADERS });
@@ -671,8 +779,13 @@ serve(async (req: Request) => {
       if (ayah) {
         const tafsirMap = await fetchTafsirBatch([ayah.id]);
         const matches = buildMatches([ayah], tafsirMap);
+        // Also search hadiths for the same query — user might want both
+        let relatedHadiths = await searchHadiths(keywords, 2);
+        if (relatedHadiths.length > 0) {
+          relatedHadiths = await resolveCollectionNames(relatedHadiths);
+        }
         return new Response(
-          JSON.stringify(buildSuccessResponse(rawQuery, matches, null)),
+          JSON.stringify(buildSuccessResponse(rawQuery, matches, null, buildHadithMatches(relatedHadiths))),
           {
             status: 200,
             headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
@@ -689,8 +802,13 @@ serve(async (req: Request) => {
         const ayahIds = ayat.map((a) => a.id);
         const tafsirMap = await fetchTafsirBatch(ayahIds);
         const matches = buildMatches(ayat, tafsirMap);
+        // Also search hadiths for the same topic
+        let topicHadiths = await searchHadiths(keywords, 2);
+        if (topicHadiths.length > 0) {
+          topicHadiths = await resolveCollectionNames(topicHadiths);
+        }
         return new Response(
-          JSON.stringify(buildSuccessResponse(rawQuery, matches, topic.name)),
+          JSON.stringify(buildSuccessResponse(rawQuery, matches, topic.name, buildHadithMatches(topicHadiths))),
           {
             status: 200,
             headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
@@ -699,7 +817,7 @@ serve(async (req: Request) => {
       }
     }
 
-    // Stage 4: Full-text search fallback
+    // Stage 4: Full-text search on Quran ayat
     const joinedKeywords = keywords.join(" ");
     let ayat = await searchAyatFTS(joinedKeywords, 3);
 
@@ -708,12 +826,20 @@ serve(async (req: Request) => {
       ayat = await searchAyatILike(keywords, 3);
     }
 
-    if (ayat.length > 0) {
+    // Stage 5: Search hadiths in parallel
+    let hadithResults = await searchHadiths(keywords, 3);
+    if (hadithResults.length > 0) {
+      hadithResults = await resolveCollectionNames(hadithResults);
+    }
+    const hadithMatches = buildHadithMatches(hadithResults);
+
+    // Return combined results (Quran + Hadith)
+    if (ayat.length > 0 || hadithMatches.length > 0) {
       const ayahIds = ayat.map((a) => a.id);
-      const tafsirMap = await fetchTafsirBatch(ayahIds);
+      const tafsirMap = ayat.length > 0 ? await fetchTafsirBatch(ayahIds) : {};
       const matches = buildMatches(ayat, tafsirMap);
       return new Response(
-        JSON.stringify(buildSuccessResponse(rawQuery, matches, null)),
+        JSON.stringify(buildSuccessResponse(rawQuery, matches, null, hadithMatches)),
         {
           status: 200,
           headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
@@ -721,7 +847,7 @@ serve(async (req: Request) => {
       );
     }
 
-    // No match
+    // No match in either Quran or Hadith
     return new Response(JSON.stringify(buildNoMatchResponse(rawQuery)), {
       status: 200,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
