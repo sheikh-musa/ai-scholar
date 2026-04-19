@@ -795,6 +795,45 @@ function buildMatchesFromTafsirFTS(rows: TafsirFtsRow[]): MatchEntry[] {
   return Array.from(byAyah.values());
 }
 
+/**
+ * Merge tafsir-FTS matches into a base match list.
+ * - Overlays matched_passage + matched_passage_tier onto scholar entries
+ *   already present in `base` (same surah:ayah:scholar:source).
+ * - Appends tafsir-only matches (ayats not present in `base`).
+ * Mutates base's nested tafsir entries in place for the overlay.
+ */
+function mergeWithTafsirFts(base: MatchEntry[], tafsirFtsMatches: MatchEntry[]): MatchEntry[] {
+  if (tafsirFtsMatches.length === 0) return base;
+
+  const lookup = new Map<string, { matched_passage: string; matched_passage_tier: string }>();
+  for (const m of tafsirFtsMatches) {
+    for (const t of m.tafsir) {
+      if (t.matched_passage && t.matched_passage_tier) {
+        const key = `${m.surah}:${m.ayah}:${t.scholar}:${t.source}`;
+        lookup.set(key, {
+          matched_passage: t.matched_passage,
+          matched_passage_tier: t.matched_passage_tier,
+        });
+      }
+    }
+  }
+
+  for (const m of base) {
+    for (const t of m.tafsir) {
+      const key = `${m.surah}:${m.ayah}:${t.scholar}:${t.source}`;
+      const hit = lookup.get(key);
+      if (hit) {
+        t.matched_passage = hit.matched_passage;
+        t.matched_passage_tier = hit.matched_passage_tier;
+      }
+    }
+  }
+
+  const seenAyat = new Set(base.map((m) => `${m.surah}:${m.ayah}`));
+  const tafsirOnly = tafsirFtsMatches.filter((m) => !seenAyat.has(`${m.surah}:${m.ayah}`));
+  return [...base, ...tafsirOnly];
+}
+
 // ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
@@ -841,7 +880,10 @@ Deno.serve(async (req: Request) => {
       const ayah = await fetchAyahByRef(verseRef.surah, verseRef.ayah);
       if (ayah) {
         const tafsirMap = await fetchTafsirBatch([ayah.id]);
-        const matches = buildMatches([ayah], tafsirMap);
+        const baseMatches = buildMatches([ayah], tafsirMap);
+        const tafsirFtsRows = await searchTafsirFTS(keywords.join(" "), 5);
+        const tafsirFtsMatches = buildMatchesFromTafsirFTS(tafsirFtsRows);
+        const matches = mergeWithTafsirFts(baseMatches, tafsirFtsMatches);
         // Also search hadiths for the same query — user might want both
         let relatedHadiths = await searchHadiths(keywords, 2);
         if (relatedHadiths.length > 0) {
@@ -864,7 +906,10 @@ Deno.serve(async (req: Request) => {
       if (ayat.length > 0) {
         const ayahIds = ayat.map((a) => a.id);
         const tafsirMap = await fetchTafsirBatch(ayahIds);
-        const matches = buildMatches(ayat, tafsirMap);
+        const baseMatches = buildMatches(ayat, tafsirMap);
+        const tafsirFtsRows = await searchTafsirFTS(keywords.join(" "), 5);
+        const tafsirFtsMatches = buildMatchesFromTafsirFTS(tafsirFtsRows);
+        const matches = mergeWithTafsirFts(baseMatches, tafsirFtsMatches);
         // Also search hadiths for the same topic
         let topicHadiths = await searchHadiths(keywords, 2);
         if (topicHadiths.length > 0) {
@@ -908,14 +953,7 @@ Deno.serve(async (req: Request) => {
       const ayahIds = ayat.map((a) => a.id);
       const tafsirMap = ayat.length > 0 ? await fetchTafsirBatch(ayahIds) : {};
       const ayatMatches = buildMatches(ayat, tafsirMap);
-
-      // De-duplicate: skip tafsir-FTS matches for ayat already in ayatMatches
-      const seenAyat = new Set(ayatMatches.map((m) => `${m.surah}:${m.ayah}`));
-      const tafsirOnly = tafsirMatches.filter(
-        (m) => !seenAyat.has(`${m.surah}:${m.ayah}`)
-      );
-
-      const matches = [...ayatMatches, ...tafsirOnly];
+      const matches = mergeWithTafsirFts(ayatMatches, tafsirMatches);
       return new Response(
         JSON.stringify(buildSuccessResponse(rawQuery, matches, null, hadithMatches)),
         {
