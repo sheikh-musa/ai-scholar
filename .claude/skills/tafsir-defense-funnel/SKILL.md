@@ -1,6 +1,6 @@
 ---
 name: tafsir-defense-funnel
-description: Use when any code in ai-scholar emits a response to a scholar-class query (Al-Bayān / Al-Mīzān / ask-scholar). Enforces the tafsir-FTS → Claude synthesis funnel, matched_passage overlay, scholar-gate routing, and no-hallucinated-isnad invariant. TRIGGER when editing supabase/functions/ask-scholar/**, scripts/albayan_bot.py, scripts/mizan_bot.py, or anything calling search_tafsir_fts.
+description: Invoke this skill BEFORE any edit to supabase/functions/ask-scholar/**, scripts/albayan_bot.py, scripts/mizan_bot.py, or any code that calls an LLM (anthropic/openai/google SDK) from the ai-scholar repo. Enforces the tafsir-FTS → LLM synthesis funnel (retrieval first, never last), matched_passage overlay on every match path, scholar-gate routing for ruling-class queries, and the no-hallucinated-isnad rule. Applies to any response emitted by Al-Bayān or Al-Mīzān to a scholar-class query.
 ---
 
 # Tafsir Defense Funnel

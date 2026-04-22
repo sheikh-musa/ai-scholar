@@ -1,6 +1,6 @@
 ---
 name: 4-tier-transparency
-description: Use when any Al-Bayān or Al-Mīzān output is shaped, persisted, or rendered. Enforces INV-3 (Quoted / Paraphrased / Inferred / AI-Generated tier tags) at the data model and response layer, with INV-6 carve-out for definitional queries. TRIGGER when editing tafsir_entries schema, response formatters, bot adapters, or CI gates on ruling output.
+description: Invoke this skill BEFORE any edit to tafsir_entries / mizan_interactions schema, response-shaping code in supabase/functions/ask-scholar/** or scripts/*_bot.py, or any CI gate on scholar-class output. Enforces INV-3 (Quoted / Paraphrased / Inferred / AI-Generated tier tags required on every response, NOT NULL at the data model, no mixed tiers in a single body) and the INV-6 action_prompt carve-out (required iff query_type = "ruling"; null for definition / biography / language-clarification / madhhab-identification).
 ---
 
 # Four-Tier Transparency
