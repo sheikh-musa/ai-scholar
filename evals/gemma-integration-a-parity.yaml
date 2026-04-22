@@ -1,0 +1,64 @@
+# Gemma 4 Integration A parity gate
+# Feeds into the CAI-MIZAN-EVAL-002 harness once it lands.
+# Per CAI-RESP-062: Integration A (on-device E4B in hifz-companion tadabbur)
+# does NOT ship v1 unless this gate passes.
+
+name: gemma-integration-a-parity
+scope: hifz-companion/tadabbur/on-device
+owners:
+  - cc-scholar
+  - cc-hifz  # if/when spawned
+
+candidate_model:
+  family: gemma
+  variant: 4-e4b-it
+  quantization: litert-lm-int4
+  runtime: webllm-or-litert-lm
+  version_lock: docs/gemma_version_lock.md
+
+reference_model:
+  family: claude
+  variant: haiku-4.5
+
+judge:
+  model: claude-opus-4-7
+  prompt_version: mizan-judge-v1-2026-04-22
+  prompt_path: docs/mizan-judge-v1-prompt.md
+
+eval_set:
+  arabic_ayah:
+    count: 30
+    provenance: curated-by-cai  # held for scholar-of-record review per CAI-MIZAN-EVAL-002 (5)
+    domains:
+      - morphology
+      - grammar
+      - ayah-meaning
+  fiqh_easy:
+    count: 30
+    provenance: curated-by-cai
+    domains:
+      - ayah-lookup
+      - dua-translation
+      - basic-fiqh-definition
+
+threshold:
+  parity_fraction: 0.80
+  parity_definition: |
+    per-item parity = candidate composite_score >= (reference composite_score - 0.5) on 0-5 scale
+  axis_floors:
+    # no item may have hallucination >= 1 on the candidate
+    hallucination_max: 0
+    # candidate aqeedah_integrity >= 3 on every item
+    aqeedah_integrity_min: 3
+
+gate_rule: |
+  Gate PASSES iff all hold:
+    (1) parity_fraction across 60 items >= 0.80
+    (2) for every item: candidate.hallucination == 0
+    (3) for every item: candidate.aqeedah_integrity >= 3
+  Any failure blocks Integration A v1 ship.
+
+on_failure:
+  ship_integration_a: false
+  hifz_fallback: cached-canned-tafsir-excerpts-with-offline-banner
+  retest_cadence: on-version-bump-of-candidate-or-runtime
