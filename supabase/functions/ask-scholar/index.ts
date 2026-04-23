@@ -753,6 +753,7 @@ function buildScholarGateResponse(question: string) {
   return {
     question,
     scholar_gate: true,
+    tier: "ai-generated" as const, // 4-tier-transparency T-2: refusal is model-authored
     message: SCHOLAR_GATE_MESSAGE,
     suggested_resources: SUGGESTED_RESOURCES,
   };
@@ -762,6 +763,7 @@ function buildNoMatchResponse(question: string) {
   return {
     question,
     scholar_gate: false,
+    tier: "ai-generated" as const, // 4-tier-transparency T-2: refusal is model-authored
     matches: [],
     practice_offramp:
       "Try: Explore a topic like 'patience', 'gratitude', or 'prayer', or ask about a specific verse like '2:153'.",
@@ -796,9 +798,22 @@ function buildSuccessResponse(
       ? PRACTICE_MAP[topicName]
       : DEFAULT_PRACTICE;
 
+  // 4-tier-transparency T-2: response shape carries a single top-level tier
+  // derived from the evidence chain. With retrieval-grounded matches: inferred
+  // (≥2 sources typical) or paraphrased (exactly 1). No retrieval: ai-generated.
+  let tier: "quoted" | "paraphrased" | "inferred" | "ai-generated";
+  if (matches.length === 0 && hadithMatches.length === 0) {
+    tier = "ai-generated";
+  } else if (matches.length + hadithMatches.length === 1) {
+    tier = "paraphrased";
+  } else {
+    tier = "inferred";
+  }
+
   return {
     question,
     scholar_gate: false,
+    tier,
     matches,
     hadith_matches: hadithMatches,
     practice_offramp: practice,
