@@ -19,6 +19,12 @@ Subcommands:
                             verdict ∈ {ok, minor-correction, retract, escalate}
                             reviewer name resolved from MIZAN_REVIEWER env or
                             defaults to 'cai'.
+  promote <interaction_id> --grade N [--expected TEXT]
+                            Phase 3: promote a reviewed (verdict ok or
+                            minor-correction) interaction into mizan_eval_set
+                            as a gold-set item. --grade 1..5 is the scholar
+                            quality grade on the expected answer. Feeds the
+                            calibration pool that unlocks mizan_retract_gate.
 
 Design: urllib + supabase REST, matching existing ai-scholar scripts pattern.
 """
@@ -277,6 +283,101 @@ def cmd_verdict(argv: list) -> int:
 
 
 # ---------------------------------------------------------------------------
+# promote subcommand — Phase 3: reviewed interactions → mizan_eval_set
+# ---------------------------------------------------------------------------
+
+
+def cmd_promote(argv: list) -> int:
+    if not argv:
+        sys.stderr.write("promote requires <interaction_id>\n")
+        return 2
+    iid = argv[0]
+    grade_raw = _flag(argv[1:], "--grade", None)
+    expected_override = _flag(argv[1:], "--expected", None)
+
+    if grade_raw is None:
+        sys.stderr.write("promote requires --grade 1..5 (scholar quality grade)\n")
+        return 2
+    try:
+        grade = int(grade_raw)
+        if not (1 <= grade <= 5):
+            raise ValueError
+    except ValueError:
+        sys.stderr.write("--grade must be integer 1..5\n")
+        return 2
+
+    interactions = sb_get(
+        f"mizan_interactions?id=eq.{iid}"
+        "&select=id,query_text,response_text,output_tier"
+    )
+    if not interactions:
+        sys.stderr.write(f"interaction {iid} not found\n")
+        return 1
+    interaction = interactions[0]
+
+    reviews = sb_get(
+        f"mizan_human_reviews?interaction_id=eq.{iid}"
+        "&verdict=in.(ok,minor-correction)"
+        "&select=verdict,correction_text,reviewer,created_at"
+        "&order=created_at.desc&limit=1"
+    )
+    if not reviews:
+        sys.stderr.write(
+            f"interaction {iid} has no human review with verdict in (ok, minor-correction). "
+            "Use `mizan_review.py verdict ...` first.\n"
+        )
+        return 1
+    review = reviews[0]
+
+    existing = sb_get(f"mizan_eval_set?source_interaction=eq.{iid}&select=id&limit=1")
+    if existing:
+        sys.stderr.write(
+            f"interaction {iid} already promoted (eval_set row {existing[0]['id'][:8]}). "
+            "Edit the existing row via SQL if the grade or expected_answer changed.\n"
+        )
+        return 1
+
+    # Promotion logic:
+    #  verdict=minor-correction → expected_answer = correction_text (scholar's fix)
+    #  verdict=ok              → expected_answer = original response (scholar ratified)
+    #  operator may override via --expected TEXT.
+    if expected_override:
+        expected_answer = expected_override
+    elif review["verdict"] == "minor-correction":
+        if not review.get("correction_text"):
+            sys.stderr.write(
+                "minor-correction review has no correction_text; pass --expected TEXT explicitly\n"
+            )
+            return 1
+        expected_answer = review["correction_text"]
+    else:
+        expected_answer = interaction["response_text"]
+
+    provenance = "corrected-from-flagged" if review["verdict"] == "minor-correction" else "curated-by-cai"
+    row = {
+        "provenance": provenance,
+        "source_interaction": iid,
+        "query_text": interaction["query_text"],
+        "expected_tier": interaction["output_tier"],
+        "expected_answer": expected_answer,
+        "scholar_grader": review["reviewer"],
+        "scholar_grade": grade,
+        "active": True,
+    }
+    created = sb_post("mizan_eval_set", row)
+    new_id = created[0]["id"] if isinstance(created, list) and created else None
+    print(
+        f"[promote] eval_set row {new_id[:8] if new_id else '(new)'} created "
+        f"provenance={provenance} grade={grade}"
+    )
+
+    # Show gold-set progress toward retract-gate threshold (30 items default).
+    total = sb_get("mizan_eval_set?active=is.true&scholar_grade=not.is.null&select=id")
+    print(f"[promote] gold set now has {len(total)} active scholar-graded items (gate threshold: 30)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Tiny arg helper (shared with mizan_judge.py)
 # ---------------------------------------------------------------------------
 
@@ -298,6 +399,7 @@ SUBCOMMANDS = {
     "list": cmd_list,
     "show": cmd_show,
     "verdict": cmd_verdict,
+    "promote": cmd_promote,
 }
 
 
