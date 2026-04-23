@@ -1,5 +1,10 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { classifyQueryType, type QueryType } from "../_shared/query-type-classifier.ts";
+import {
+  persistRulingEmission,
+  type PersistRulingFields,
+} from "../_shared/persist-ruling.ts";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -7,7 +12,63 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Persistence client uses service role so RLS-protected mizan_interactions
+// and ruling_audit_log inserts work. Falls back to anon client if env not
+// set (persistence will fail-soft via tryPersist below).
+const persistClient = SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+  : supabase;
+
+const ASK_SCHOLAR_PROMPT_VERSION = "ask-scholar-v1-2026-04-19";
+const ASK_SCHOLAR_MODEL_NAME = "retrieval-only";
+
+/** SHA-256 hex of the input. */
+async function sha256Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Resolve telegram_id_hash from request body, falling back to anonymous. */
+async function resolveTelegramIdHash(body: Record<string, unknown>): Promise<string> {
+  if (typeof body.telegram_id_hash === "string" && body.telegram_id_hash.length === 64) {
+    return body.telegram_id_hash;
+  }
+  if (typeof body.telegram_id === "string" || typeof body.telegram_id === "number") {
+    return await sha256Hex(String(body.telegram_id));
+  }
+  return await sha256Hex("anonymous");
+}
+
+/**
+ * Persist a ruling emission to mizan_interactions + ruling_audit_log. Errors
+ * are logged but do not fail the response — governance integrity is
+ * desirable but should not block user-facing replies until the audit
+ * pipeline is verified live. See INV-8 fallback design for the producer
+ * contract.
+ */
+async function tryPersist(fields: PersistRulingFields): Promise<void> {
+  try {
+    await persistRulingEmission(persistClient, fields);
+  } catch (err) {
+    console.error("ruling persistence failed:", err instanceof Error ? err.message : err, {
+      query_type: fields.query_type,
+      bot_variant: fields.bot_variant,
+      output_tier: fields.output_tier,
+    });
+  }
+}
+
+/**
+ * v0.1 retrieval_ids: returned as empty []. Schema column is uuid[] so we
+ * cannot pass surah:ayah display identifiers here. Plumbing actual ayah
+ * uuids through MatchEntry is a follow-up — requires extending the
+ * MatchEntry type and wiring through buildMatches/buildMatchesFromTafsirFTS.
+ * Tracked as deferred enhancement; matched_passage_id remains the primary
+ * audit anchor for now.
+ */
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -852,9 +913,12 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const body = await req.json();
+    const body = (await req.json()) as Record<string, unknown>;
     // Accept both "question" and "query" field names
-    const rawQuery: string = body.question || body.query || "";
+    const rawQuery: string =
+      (typeof body.question === "string" && body.question) ||
+      (typeof body.query === "string" && body.query) ||
+      "";
 
     if (!rawQuery.trim()) {
       return new Response(
@@ -863,12 +927,33 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // INV-6 + 4-tier-transparency: classify query type once for the request.
+    const queryType: QueryType = classifyQueryType(rawQuery).type;
+
+    // Audit identity: hash of caller-provided telegram id, or anonymous bucket.
+    const telegramIdHash = await resolveTelegramIdHash(body);
+    const botVariant: "al-bayan" | "al-mizan" =
+      body.bot_variant === "al-mizan" ? "al-mizan" : "al-bayan";
+    const threadId = typeof body.thread_id === "string" ? body.thread_id : null;
+
     // Stage 1: Normalize
     const keywords = normalize(rawQuery);
 
     // Stage 2: Scholar Gate (fiqh detection)
     if (detectFiqh(keywords, rawQuery)) {
-      return new Response(JSON.stringify(buildScholarGateResponse(rawQuery)), {
+      const shape = buildScholarGateResponse(rawQuery);
+      await tryPersist({
+        telegram_id_hash: telegramIdHash,
+        thread_id: threadId,
+        bot_variant: botVariant,
+        query_type: queryType,
+        query_text: rawQuery,
+        response_text: shape.message,
+        output_tier: "ai-generated",
+        model_name: ASK_SCHOLAR_MODEL_NAME,
+        prompt_version: ASK_SCHOLAR_PROMPT_VERSION,
+      });
+      return new Response(JSON.stringify(shape), {
         status: 200,
         headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
       });
@@ -889,8 +974,22 @@ Deno.serve(async (req: Request) => {
         if (relatedHadiths.length > 0) {
           relatedHadiths = await resolveCollectionNames(relatedHadiths);
         }
+        const hadithMatches = buildHadithMatches(relatedHadiths);
+        const shape = buildSuccessResponse(rawQuery, matches, null, hadithMatches);
+        await tryPersist({
+          telegram_id_hash: telegramIdHash,
+          thread_id: threadId,
+          bot_variant: botVariant,
+          query_type: queryType,
+          query_text: rawQuery,
+          response_text: JSON.stringify(matches),
+          output_tier: matches.length > 0 ? "inferred" : "ai-generated",
+          matched_passage_id: tafsirFtsRows[0]?.ayah_id ?? null,
+          model_name: ASK_SCHOLAR_MODEL_NAME,
+          prompt_version: ASK_SCHOLAR_PROMPT_VERSION,
+        });
         return new Response(
-          JSON.stringify(buildSuccessResponse(rawQuery, matches, null, buildHadithMatches(relatedHadiths))),
+          JSON.stringify(shape),
           {
             status: 200,
             headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
@@ -915,8 +1014,22 @@ Deno.serve(async (req: Request) => {
         if (topicHadiths.length > 0) {
           topicHadiths = await resolveCollectionNames(topicHadiths);
         }
+        const hadithMatches = buildHadithMatches(topicHadiths);
+        const shape = buildSuccessResponse(rawQuery, matches, topic.name, hadithMatches);
+        await tryPersist({
+          telegram_id_hash: telegramIdHash,
+          thread_id: threadId,
+          bot_variant: botVariant,
+          query_type: queryType,
+          query_text: rawQuery,
+          response_text: JSON.stringify({ topic: topic.name, matches }),
+          output_tier: "inferred",
+          matched_passage_id: tafsirFtsRows[0]?.ayah_id ?? null,
+          model_name: ASK_SCHOLAR_MODEL_NAME,
+          prompt_version: ASK_SCHOLAR_PROMPT_VERSION,
+        });
         return new Response(
-          JSON.stringify(buildSuccessResponse(rawQuery, matches, topic.name, buildHadithMatches(topicHadiths))),
+          JSON.stringify(shape),
           {
             status: 200,
             headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
@@ -954,8 +1067,21 @@ Deno.serve(async (req: Request) => {
       const tafsirMap = ayat.length > 0 ? await fetchTafsirBatch(ayahIds) : {};
       const ayatMatches = buildMatches(ayat, tafsirMap);
       const matches = mergeWithTafsirFts(ayatMatches, tafsirMatches);
+      const shape = buildSuccessResponse(rawQuery, matches, null, hadithMatches);
+      await tryPersist({
+        telegram_id_hash: telegramIdHash,
+        thread_id: threadId,
+        bot_variant: botVariant,
+        query_type: queryType,
+        query_text: rawQuery,
+        response_text: JSON.stringify(matches),
+        output_tier: "inferred",
+        matched_passage_id: tafsirFtsRows[0]?.ayah_id ?? null,
+        model_name: ASK_SCHOLAR_MODEL_NAME,
+        prompt_version: ASK_SCHOLAR_PROMPT_VERSION,
+      });
       return new Response(
-        JSON.stringify(buildSuccessResponse(rawQuery, matches, null, hadithMatches)),
+        JSON.stringify(shape),
         {
           status: 200,
           headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
@@ -964,7 +1090,19 @@ Deno.serve(async (req: Request) => {
     }
 
     // No match in either Quran or Hadith
-    return new Response(JSON.stringify(buildNoMatchResponse(rawQuery)), {
+    const noMatchShape = buildNoMatchResponse(rawQuery);
+    await tryPersist({
+      telegram_id_hash: telegramIdHash,
+      thread_id: threadId,
+      bot_variant: botVariant,
+      query_type: queryType,
+      query_text: rawQuery,
+      response_text: noMatchShape.message,
+      output_tier: "ai-generated",
+      model_name: ASK_SCHOLAR_MODEL_NAME,
+      prompt_version: ASK_SCHOLAR_PROMPT_VERSION,
+    });
+    return new Response(JSON.stringify(noMatchShape), {
       status: 200,
       headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
     });
