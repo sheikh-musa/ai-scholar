@@ -20,19 +20,20 @@ Hook fires on:
    - any file under `supabase/functions/` that imports `anthropic` / `openai` / `google-generativeai` / `@anthropic-ai/sdk`
 2. **pre-commit** in ai-scholar when any of the above paths are staged.
 
-## Check — LLM-call must be preceded by search_tafsir_fts in same function
+## Check — LLM-call must be preceded by search_tafsir_fts in the same FILE
 
-Static analysis, no runtime required. For each staged file:
+Static analysis, no runtime required. v0 enforcement is file-level; v1 will tighten to same-function once cross-file AST is feasible. For each staged file:
 
 1. Parse the file (regex-based is acceptable for v0; proper AST is better v1).
-2. For each function definition (`function`, `async function`, `const foo = async (`, `def foo`):
-   a. Find line numbers of LLM-SDK invocations inside the function body:
-      - TypeScript: `.messages.create(`, `.chat.completions.create(`, `.generateContent(`, or any call to an imported LLM client.
-      - Python: `anthropic.Anthropic().messages.create(`, `openai.ChatCompletion.create(`, `genai.GenerativeModel(...).generate_content(`.
-   b. If ≥ 1 LLM-call line found:
-      i. Find line numbers of `supabase.rpc('search_tafsir_fts', ...)` OR equivalent (`search_tafsir_fts(` as a typed function call) inside the same function.
-      ii. Fail if no such call exists, OR if its line number is ≥ the first LLM-call line.
-3. Files matching `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `**/fixtures/**` are exempt.
+2. Detect presence of LLM-SDK invocations anywhere in the file:
+   - TypeScript: `.messages.create(`, `.chat.completions.create(`, `.generateContent(`, or any call to an imported LLM client.
+   - Python: `anthropic.Anthropic().messages.create(`, `openai.ChatCompletion.create(`, `genai.GenerativeModel(...).generate_content(`, or subprocess invocation of `claude -p` (CLI as LLM proxy).
+3. If ≥ 1 LLM-call found:
+   a. Find any `supabase.rpc('search_tafsir_fts', ...)` OR `search_tafsir_fts(` typed call OR Python `supabase_rpc("search_tafsir_fts", ...)` anywhere in the file.
+   b. Fail if no such call exists.
+4. Files matching `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `**/fixtures/**` are exempt.
+
+**v0 rationale:** file-level check catches the architecturally-significant case ("a file that talks to an LLM about Islamic content must also do retrieval"). Same-function ordering is harder to prove statically when retrieval is delegated to a helper and the LLM call is in a handler — both are common patterns (see mizan_bot.py where `gather_context()` does retrieval and the main loop calls `ask_claude()`). The spirit of F-1 is upheld at file-level; strict function-level is a v1 tightening when AST tooling lands.
 
 On failure the hook prints:
 
@@ -46,24 +47,24 @@ REFUSED: tafsir-defense-funnel F-1 invariant violated.
   See skills/tafsir-defense-funnel/SKILL.md F-1..F-2.
 ```
 
-## Test matrix (for cc-ihsanos hook implementer)
+## Test matrix (for cc-ihsanos hook implementer) — v0 file-level
 
 | Input | Expected outcome |
 |---|---|
-| `ask-scholar/index.ts` with `supabase.rpc('search_tafsir_fts', ...)` at line 100 and `anthropic.messages.create(...)` at line 150 inside same function | PASS |
-| `ask-scholar/index.ts` with LLM call at line 80 and no `search_tafsir_fts` | REJECT |
-| `ask-scholar/index.ts` with `search_tafsir_fts` at line 120 and LLM call at line 80 (wrong order inside same function) | REJECT |
-| `ask-scholar/index.ts` with `search_tafsir_fts` in one function and LLM call in a different function | REJECT (each LLM-call function needs its own preceding RPC call) |
+| `ask-scholar/index.ts` with `supabase.rpc('search_tafsir_fts', ...)` somewhere AND `anthropic.messages.create(...)` somewhere | PASS |
+| `ask-scholar/index.ts` with LLM call and NO `search_tafsir_fts` anywhere | REJECT |
+| `scripts/mizan_bot.py` with `search_tafsir_fts` in one function and `claude -p` subprocess call in another (e.g., handler calls gather_context which calls retrieval; main loop calls ask_claude) | PASS (file-level, v0) |
 | `__tests__/ask-scholar.test.ts` mocking the LLM client | PASS (test paths exempt) |
-| `scripts/mizan_bot.py` that composes both via a helper `handle_query()` calling `retrieve_tafsir_fts()` then `claude.messages.create()` | PASS |
 | `scripts/smoke_tafsir_fts.sh` — shell script, no LLM SDK imported | PASS (no LLM call, no check fires) |
+| Newly-added `scripts/no_retrieval_bot.py` that imports anthropic and calls `.messages.create(...)` but has no search_tafsir_fts | REJECT |
 
 ## Edge cases
 
 1. **Non-LLM imports.** The `@supabase/supabase-js` import itself is not an LLM. Only the listed SDKs count.
-2. **Indirect LLM calls via helper.** If a file imports a helper that eventually calls an LLM, the hook only inspects the file being edited. This is a known blind spot; v1 may add cross-file AST. For v0, skill authors are expected to keep retrieval + synthesis in the same file at minimum.
+2. **Indirect LLM calls via helper.** At v0 (file-level), the hook only inspects the file being edited. Retrieval can be delegated to helper functions within the same file; the hook is satisfied. Cross-file delegation (e.g., helper imported from another module that does retrieval) is NOT caught at v0 — skill authors must keep retrieval + synthesis in the same file at minimum. v1 upgrade path: cross-file AST traversal.
 3. **Streaming SDK calls.** `.messages.stream(` counts as an LLM call.
-4. **Tool-use LLM flows.** An LLM call made inside a tool-use callback still counts — retrieval must precede the outer LLM call.
+4. **Tool-use LLM flows.** An LLM call made inside a tool-use callback still counts — retrieval must exist somewhere in the same file.
+5. **Claude CLI subprocess.** `subprocess.run([CLAUDE_BIN, "-p", ...])` is counted as an LLM call (matches the python bot pattern). Hook grep includes the CLAUDE_BIN pattern or a bare `claude` command with `-p`.
 
 ## Failure recovery
 
