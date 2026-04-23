@@ -158,10 +158,15 @@ def send_typing(chat_id):
 # --- Edge Function client ---
 
 def call_ask_scholar(query, chat_id):
-    """POST to the ask-scholar Supabase Edge Function."""
+    """POST to the ask-scholar Supabase Edge Function.
+    Sends telegram_id so the Edge Function can hash it for mizan_interactions
+    audit identity (per CAI-MIZAN-EVAL-001 telegram_id_hash constraint).
+    chat_id kept for backward compat with older Edge Function versions."""
     payload = json.dumps({
         "query": query,
+        "telegram_id": str(chat_id),
         "chat_id": str(chat_id),
+        "bot_variant": "al-bayan",
     }).encode("utf-8")
     req = urllib.request.Request(
         EDGE_FUNCTION_URL,

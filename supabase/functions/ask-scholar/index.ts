@@ -31,13 +31,16 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Resolve telegram_id_hash from request body, falling back to anonymous. */
+/** Resolve telegram_id_hash from request body, falling back to anonymous.
+ * Accepts (in priority order): pre-hashed `telegram_id_hash`, raw `telegram_id`,
+ * legacy `chat_id` (older callers like early albayan_bot used this). */
 async function resolveTelegramIdHash(body: Record<string, unknown>): Promise<string> {
   if (typeof body.telegram_id_hash === "string" && body.telegram_id_hash.length === 64) {
     return body.telegram_id_hash;
   }
-  if (typeof body.telegram_id === "string" || typeof body.telegram_id === "number") {
-    return await sha256Hex(String(body.telegram_id));
+  const raw = body.telegram_id ?? body.chat_id;
+  if (typeof raw === "string" || typeof raw === "number") {
+    return await sha256Hex(String(raw));
   }
   return await sha256Hex("anonymous");
 }
@@ -61,14 +64,14 @@ async function tryPersist(fields: PersistRulingFields): Promise<void> {
   }
 }
 
-/**
- * v0.1 retrieval_ids: returned as empty []. Schema column is uuid[] so we
- * cannot pass surah:ayah display identifiers here. Plumbing actual ayah
- * uuids through MatchEntry is a follow-up — requires extending the
- * MatchEntry type and wiring through buildMatches/buildMatchesFromTafsirFTS.
- * Tracked as deferred enhancement; matched_passage_id remains the primary
- * audit anchor for now.
- */
+/** Collect ayah uuids from a MatchEntry list for retrieval_ids audit field. */
+function collectAyahUuids(matches: { ayah_id?: string }[]): string[] {
+  const seen = new Set<string>();
+  for (const m of matches) {
+    if (m.ayah_id) seen.add(m.ayah_id);
+  }
+  return Array.from(seen);
+}
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -729,6 +732,7 @@ async function fetchTafsirBatch(
 // ---------------------------------------------------------------------------
 
 interface MatchEntry {
+  ayah_id?: string;                       // ayat.id uuid — used for retrieval_ids[] audit plumbing
   surah: number;
   ayah: number;
   surah_name: string;
@@ -808,6 +812,7 @@ function buildMatches(
   tafsirMap: Record<string, TafsirRow[]>
 ): MatchEntry[] {
   return ayat.map((a) => ({
+    ayah_id: a.id,
     surah: a.surah_number,
     ayah: a.ayah_number,
     surah_name: getSurahName(a.surah_number),
@@ -835,6 +840,7 @@ function buildMatchesFromTafsirFTS(rows: TafsirFtsRow[]): MatchEntry[] {
   for (const r of rows) {
     if (!byAyah.has(r.ayah_id)) {
       byAyah.set(r.ayah_id, {
+        ayah_id: r.ayah_id,
         surah: r.surah_number,
         ayah: r.ayah_number,
         surah_name: getSurahName(r.surah_number),
@@ -985,6 +991,7 @@ Deno.serve(async (req: Request) => {
           response_text: JSON.stringify(matches),
           output_tier: matches.length > 0 ? "inferred" : "ai-generated",
           matched_passage_id: tafsirFtsRows[0]?.ayah_id ?? null,
+          retrieval_ids: collectAyahUuids(matches),
           model_name: ASK_SCHOLAR_MODEL_NAME,
           prompt_version: ASK_SCHOLAR_PROMPT_VERSION,
         });
@@ -1025,6 +1032,7 @@ Deno.serve(async (req: Request) => {
           response_text: JSON.stringify({ topic: topic.name, matches }),
           output_tier: "inferred",
           matched_passage_id: tafsirFtsRows[0]?.ayah_id ?? null,
+          retrieval_ids: collectAyahUuids(matches),
           model_name: ASK_SCHOLAR_MODEL_NAME,
           prompt_version: ASK_SCHOLAR_PROMPT_VERSION,
         });
@@ -1077,6 +1085,7 @@ Deno.serve(async (req: Request) => {
         response_text: JSON.stringify(matches),
         output_tier: "inferred",
         matched_passage_id: tafsirFtsRows[0]?.ayah_id ?? null,
+        retrieval_ids: collectAyahUuids(matches),
         model_name: ASK_SCHOLAR_MODEL_NAME,
         prompt_version: ASK_SCHOLAR_PROMPT_VERSION,
       });
