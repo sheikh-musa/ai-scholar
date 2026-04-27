@@ -1,15 +1,37 @@
-# Embedding Pipeline — v0.2 Retrieval Architecture (Layer 2)
+# Embedding Pipeline — v0.2 Retrieval Architecture (system_layer L2)
 
-**Status:** Design draft. Filed to cai for adversarial review. NO code ships from this doc.
+**Status:** Design ratified. CAI-RESP-094 + CAI-RESP-095 + AL-BAYAN-003 amendments applied 2026-04-28. NO code ships until ENCODER-EVAL completes + Modal privacy gate verified.
 **Author:** cc-scholar
-**Date:** 2026-04-28
-**Parent context:** "alim-grade architecture" framing 2026-04-28 conversation; v4-tag-run halt; VISION-003 INV-3 (4-tier transparency), INV-7 (scholar pairing), INV-8 (audit substrate). This is the *Layer 2* from the 8-layer scaffold ("alim-grade" requires Layers 1-8; this doc only delivers L2).
+**Date:** 2026-04-28 (amendments 2026-04-28T16:30 UTC)
+**Parent context:** "alim-grade architecture" framing 2026-04-28 conversation; v4-tag-run halt; VISION-003 INV-3 (4-tier transparency), INV-7 (scholar pairing), INV-8 (audit substrate). This is *system_layer L2* from the engineering scaffold (per `/docs/LAYERING.md`); "alim-grade" requires system_layer L1-L8 plus content_layer maturity; this doc only delivers system_layer L2 retrieval substrate.
+
+## Amendments since initial draft
+
+- **2026-04-28 CAI-RESP-094 (id 562)**: vendor rejection (no Voyage-3-large), self-host BGE-M3 default with jina-v3 challenger, Q10 hard gate on retract-unlock, AL-BAYAN-002 topic-tag demote (separate filing).
+- **2026-04-28 CAI-RESP-095 (id 567)**: Modal-first hosting for v0.2 with 5-check privacy verification gate, MIZAN-JUDGE-SHADOW-001 sequencing-first, AL-BAYAN-002 judge-consumption non-deciding-factor bound.
+- **2026-04-28 AL-BAYAN-003 (id 568)**: scope expansion to include content_layer juridical (Shafi'i fiqh primers Phase 1+2); juridical schema population PARALLEL with Quran backfill; juridical *retrieval activation* gates on Quran retrieval calibration completing.
+- **2026-04-28 ARCH-AL-BAYAN-LAYERING-RECONCILE (id 569)**: terminology disambiguation — "L2" → "system_layer L2"; juridical content is content_layer juridical, not "L3."
 
 ## Why this doc exists
 
 Topic tags are at retrieval-ceiling for the bot's user-interaction shape. Adding embeddings as the primary semantic-recall surface, with the existing `search_tafsir_fts` (FTS) as the exact-match floor, lifts that ceiling. The pipeline is hybrid by design — FTS catches proper-noun/Arabic-specific queries; embeddings catch synonym/paraphrase/conceptual queries; reciprocal rank fusion (RRF) merges; existing Opus reranker top-5s.
 
-This is **not** an alim-grade upgrade. It's foundational substrate that L3-L7 sit on. Calling it more would be the failure mode VISION-003 inverts.
+This is **not** an alim-grade upgrade. It's foundational substrate that system_layer L3-L7 sit on. Calling it more would be the failure mode VISION-003 inverts.
+
+## §scope
+
+v0.2 corpus scope (per AL-BAYAN-003 amendment):
+
+| content_layer | v0.2 ingestion | v0.2 retrieval activation |
+|---|---|---|
+| primary (Quran) | YES (existing 6,236 ayat) | YES — primary user-serving path post-Q10 calibration |
+| interpretive (tafsir Ibn Kathir + Al-Sa'di + asbab al-nuzul) | YES (existing) | served via primary retrieval (joined-on-ayah) |
+| juridical (Shafi'i: Safīnat, Abī Shujā' Phase 1; Fath al-Mu'īn Phase 2) | YES — schema population PARALLEL with Quran backfill | DEFERRED — gates on Quran retrieval calibrated + retract-gate unlocked |
+| connective | partial (mutashabihat live) — deferred to system_layer L3 | partial |
+
+Juridical retrieval activation is a **separate gate** beyond the Q10 sequence — even after Quran retrieval is calibrated and unlocked, juridical layer activation may require its own dual-mode shadow + gold-set per AL-BAYAN-003 gold-set extension.
+
+Hadith corpus deferred to v0.3+ per CAI-RESP-094 Q3 ruling — when ingested, uses same encoder + RRF stack; cross-corpus retrieval policy (when do hadith hits ride alongside Quran in candidate set) is a system_layer L3 knowledge-graph question, NOT raw vector similarity.
 
 ---
 
@@ -90,26 +112,35 @@ Cap at ~4000 tokens per source (voyage-3 supports 32K but quality degrades with 
 
 ---
 
+## §hosting-privacy (CAI-RESP-095 (A) mandatory pre-backfill gate)
+
+Hosting target: **Modal-first for v0.2** (Mac Mini → v0.2.5 milestone, separate filing). Modal is owned-container-on-managed-compute (our container, our weights pinned, our SHA in vector_metadata, our code, our data flow) — distinct from vendor-inference-API (Voyage rejected unconditionally). Same posture as self-hosted-on-AWS-EC2.
+
+Five privacy verification checks REQUIRED BEFORE backfill kickoff per CAI-RESP-095 (A) constraint 2:
+
+1. **Query-payload logging.** Modal default behavior on logging request bodies / stdout / stderr. If any of those captures query payloads → DISABLE (env config or container-level redaction).
+2. **Operator access boundary.** Modal operator access to container memory + filesystem in normal operation vs break-glass scenarios. Document what's accessible to whom under what conditions.
+3. **Container data residency.** Cross-region container scheduling — flag any jurisdictions with mandatory-disclosure regimes problematic for Muslim-user query data. Pin region if needed.
+4. **Encryption-at-rest** for any persisted state. We don't intend to persist queries — verify the default and confirm.
+5. **Scale-to-zero in-memory state termination.** When container goes idle and Modal terminates the instance, what happens to anything held in RAM. Confirm no leak through warm-pool or snapshot mechanism.
+
+**Pre-execution checklist:** see `docs/MODAL_PRIVACY_VERIFICATION.md` (separate doc).
+
+If any check returns a blocker → file `ARCH-AL-BAYAN-MODAL-PRIVACY-001` and PAUSE backfill. Managed compute is not managed amanah until verified — fatabayyanu applies to cloud substrate.
+
 ## Vendor choice (this is the most contested decision)
 
-| Option | Dimension | Cost | Multilingual Arabic | Vendor relationship | Amanah implication |
-|---|---|---|---|---|---|
-| **voyage-3-large (Anthropic-owned Voyage AI)** | 1024 | ~$0.18/M tokens | SOTA on Arabic per MTEB | Same family as existing Anthropic dependency | Sending Quran corpus to vendor — see open question 1 |
-| OpenAI text-embedding-3-large | 3072 | ~$0.13/M tokens | Good but English-leaning | New vendor (OpenAI) | Same amanah concern + new vendor |
-| Cohere embed-multilingual-v3.0 | 1024 | ~$0.10/M tokens | Native multilingual design | New vendor (Cohere) | Same |
-| Self-host BGE-multilingual-gemma2 | 4096 | ~$0 (compute only) | Strong | None (open weights) | Amanah-pure; needs GPU + ops |
-| Self-host CAMeL-BERT | 768 | ~$0 | Arabic-specialized but smaller | None | Amanah-pure |
+**Final ruling per CAI-RESP-094 + CAI-RESP-095:** self-host from day one, Modal-first hosting, BGE-M3 default with jina-v3 challenger pending ARCH-AL-BAYAN-ENCODER-EVAL measurement (see `docs/ARCH_AL_BAYAN_ENCODER_EVAL.md`). Vendor inference APIs (Voyage, OpenAI, Cohere) all rejected unconditionally — the rejection is about the inference path, not hosting choice. Modal containers running our weights = self-host. Voyage = vendor inference. Bright-line distinction.
 
-**My v0.2 recommendation (open to challenge):** **voyage-3-large** with documented self-hosting migration path for v0.3.
+| Option | Dimension | License | Status |
+|---|---|---|---|
+| **BGE-M3** (BAAI/bge-m3) | 1024 | MIT | Default per CAI-RESP-094 — wins unless ENCODER-EVAL shows jina-v3 ≥3 MTEB-multilingual points better |
+| jina-embeddings-v3 (jinaai/jina-embeddings-v3) | 1024 | CC BY-NC 4.0 | Challenger; license review required if it wins (vs WAQFTOOL-01 monetisation model) |
+| ~~voyage-3-large~~ | ~~1024~~ | — | **REJECTED** unconditionally per CAI-RESP-094 Q1 (vendor inference API on global Muslim query stream) |
+| ~~OpenAI text-embedding-3~~ | — | — | **REJECTED** (same reason) |
+| ~~Cohere embed-multilingual-v3~~ | — | — | **REJECTED** (same reason) |
 
-Reasoning:
-- Anthropic/Voyage relationship already in scope; doesn't add a new vendor
-- Best Arabic+English semantic quality among vendor options
-- 1024d index is small (25 MB total for 6,236 ayat) — efficient
-- One-time embedding cost ~$0.56; per-query <$0.00002. Cost is essentially noise.
-- Self-host migration when a paired scholar-of-record (INV-7) considers it required for amanah
-
-**Counter-argument I want cai to test:** sending Quran + tafsir corpus to ANY vendor API — even one zero-retention contracted — touches the amanah of the data. The corpus is publicly available, but the *embedding signature* of how we structure inference over it is product IP. Worth the cost of self-hosting from day one?
+Measurement plan in `docs/ARCH_AL_BAYAN_ENCODER_EVAL.md`. Result codified as strategic_decisions row before backfill kickoff.
 
 ---
 
@@ -237,32 +268,77 @@ For Telegram bot UX (typing indicator already covers seconds of latency), this i
 
 ---
 
-## Migration plan
+## §migration-plan
 
-**Phase A — embed (no traffic switching)**
-1. Apply migration `20260428_004_ayah_embeddings.sql`.
-2. Run `scripts/embed_ayat.py` to backfill all 6,236 — ~$0.67 + ~30min wall-clock.
-3. Verify: `SELECT count(*) FROM ayah_embeddings WHERE embedding IS NOT NULL` = 6236.
-4. Spot-check a few queries via `search_ayat_semantic` RPC manually.
+Order locked per CAI-RESP-095 (B); no step skipped, no step bundled out of order:
 
-**Phase B — wire (parallel surface, no behavior change)**
-1. Add `embedViaVoyage` + RRF helpers to `_shared/`.
-2. In `ask-scholar/index.ts`, call both surfaces, RRF, log both rank-lists to a debug field but RETURN existing FTS-only result. Validates fusion is producing sensible candidates without changing user-facing behavior.
-3. Compare on a sample of 100 historical queries (replay against `mizan_interactions`): does fused top-5 differ materially from FTS-only top-5? Where?
+**Phase 0 — sequencing prerequisites (must complete BEFORE Phase A backfill kickoff)**
 
-**Phase C — cutover**
-1. After 1-2 weeks of dual-mode validation + visual-spot-check by cc-scholar (and ideally first scholar-of-record once paired), switch primary retrieval to fused result.
-2. Demote `topic_tags` from retrieval pipeline. Keep column; reuse for facet UI.
-3. Document the cutover in mizan_interactions audit (prompt_version bump).
+1. Apply migration `20260428_005_mizan_judge_shadow.sql` (MIZAN-JUDGE-SHADOW-001) standalone — destination for shadow-mode judge runs must exist before fused retrieval ships.
+2. Complete `ARCH-AL-BAYAN-ENCODER-EVAL` measurement (BGE-M3 vs jina-v3 on 30/30/30 multilingual gold-set). Result codified as strategic_decisions row.
+3. Complete Modal privacy verification (5 checks per `§hosting-privacy`). If any blocker → file `ARCH-AL-BAYAN-MODAL-PRIVACY-001` and PAUSE.
+4. Apply migration `20260428_006_ayah_embeddings.sql` (renumbered from -004; pgvector + ayah_embeddings + RLS).
 
-**Phase D — extend (out of v0.2 scope)**
-- Apply same pipeline to hadith corpus (separate `hadith_embeddings` table).
-- Multi-vector per ayah if recall on long-tail queries underperforms.
-- Self-host the embedding model.
+**Phase A — backfill (winning encoder, no user-traffic change)**
+
+5. Deploy Modal serverless container running winning encoder.
+6. Run `scripts/embed_ayat.py` — backfill all 6,236 ayat embeddings. Track encoder_sha + corpus_version per row.
+7. Verify: `SELECT count(*) FROM ayah_embeddings WHERE embedding IS NOT NULL` = 6236.
+8. Spot-check via `search_ayat_semantic` RPC.
+9. **PARALLEL TRACK (per AL-BAYAN-003):** ingest content_layer juridical Phase 1 sources (Safīnat + Matn Abī Shujā'). Schema population only — do NOT activate juridical retrieval.
+
+**Phase B — shadow mode (per Q10 hard gate)**
+
+10. Add `embedViaModal` + RRF helpers to `_shared/`.
+11. In `ask-scholar/index.ts`, call both retrieval surfaces (FTS in parallel with semantic), RRF in-process. **Log fused candidate set to `mizan_judge_shadow` table but RETURN existing FTS-only result.** No user-visible behavior change.
+12. mizan_judge runs over fused candidate set in shadow mode. Outputs to `mizan_judge_shadow` with `retrieval_mode='fused_rrf'`.
+13. 1-2 week shadow accumulation window — collect diff data.
+
+**Phase C — recalibration (Q10 step iv-v)**
+
+14. Diff audit: where does shadow judge approve/reject differ from production FTS-only judge? Categorize divergences.
+15. Augment gold-set with 50-150 semantic-only Quran items + 30-50 semantic-only juridical items per AL-BAYAN-003 — total 80-200 items, **human-labeled** (Musa Phase 1; L7 scholar Phase 2 once paired). LLM-generated gold REJECTED.
+16. Recalibrate retract threshold preserving precision floor. Don't trade false-rejection safety for recall.
+
+**Phase D — Quran retrieval cutover (Q10 step vi-vii)**
+
+17. Unlock retract-gate (calibration meets thresholds).
+18. Cutover fused Quran retrieval to primary user-serving path. Bump `prompt_version` on mizan_interactions for audit.
+19. Demote `topic_tags` from retrieval pipeline (per AL-BAYAN-002). Keep column for facet UI; bounded judge cross-check still permitted (≤ 0.2 weight, non-deciding factor).
+
+**Phase E — content_layer juridical retrieval activation (per AL-BAYAN-003 separate gate)**
+
+20. After Phase D verified in production ≥1 week, run separate dual-mode + augmented gold-set for juridical retrieval.
+21. Cutover juridical retrieval to primary surface for fiqh-class queries. Citation-rendering rule (AL-BAYAN-003) enforced at response shape.
+22. dalil_strength tier never escalated to `binding_fatwa` — that requires L7.
+
+**Phase F — extend (out of v0.2 scope, deferred to v0.3+)**
+
+- Hadith corpus into separate `hadith_embeddings` table; cross-corpus fusion via system_layer L3 knowledge graph (not raw vector similarity).
+- Mac Mini MLX/MPS deployment swap (file as `MAC-MINI-MIGRATION-001` when v0.2.5 scoped, after v0.2 in production ≥2 weeks).
+- Multi-vector per ayah if recall@10 < 0.85 on augmented gold-set.
+- Hanafi/Mālikī/Ḥanbalī juridical content (schema-supported now; content separate filings).
 
 ---
 
-## Open questions for cai (adversarial review)
+## Resolved questions (post-CAI-RESP-094 + CAI-RESP-095)
+
+All 10 open questions from initial draft now resolved. Summary:
+
+| # | Question | Ruling | Reference |
+|---|---|---|---|
+| 1 | Vendor amanah (Voyage) | REJECTED unconditionally; self-host BGE-M3 default; Modal-first for v0.2 with 5-check privacy gate | CAI-RESP-094 + CAI-RESP-095 (A) |
+| 2 | Single vs multi-vector | Single at v0.2; reopen if recall@10 < 0.85 on augmented gold-set | CAI-RESP-094 |
+| 3 | Hadith in same vector space | Quran-only at v0.2 + AL-BAYAN-003 juridical; hadith deferred to v0.3 | CAI-RESP-094 + AL-BAYAN-003 |
+| 4 | RRF k-tuning | k=60 default; tune against augmented gold-set in Q10 step (v) | CAI-RESP-094 |
+| 5 | Re-embed triggers | tafsir updates / encoder SHA bump / chunking change → full backfill; SHA + corpus_version per row | CAI-RESP-094 |
+| 6 | Topic tags fate | Demote to UX facets; bounded judge cross-check (≤0.2 weight, non-deciding factor) | AL-BAYAN-002 (updated) |
+| 7 | Multi-language test corpus | Required ≥30 each Arabic / Bahasa / English | CAI-RESP-094 |
+| 8 | Latency on bot path | 400ms p99 OK; FTS+semantic MUST run parallel | CAI-RESP-094 |
+| 9 | Vendor failure mode | Moot under self-host ruling | CAI-RESP-094 |
+| 10 | Judge re-baseline | HARD GATE — sequenced 6-step pipeline; non-negotiable | CAI-RESP-094 + CAI-RESP-095 (B) |
+
+## (legacy section) Original open questions for cai (adversarial review)
 
 These are where I'm genuinely uncertain. Pushback welcome.
 
