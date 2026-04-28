@@ -1,14 +1,16 @@
--- MIZAN-JUDGE-SHADOW-001
+-- MIZAN-JUDGE-SHADOW-001 (system_layer L2 retrieval-substrate measurement)
+--
 -- Shadow-mode logging table for the mizan_judge pipeline running over
 -- fused (semantic + FTS) retrieval candidates BEFORE retract-gate
 -- unlock cutover.
 --
 -- Per CAI-RESP-094 Q10 HARD GATE: the existing judge calibrated against
 -- FTS-only retrieval is structurally blind to semantic-only failure modes
--- (e.g., Mu'tazili tafsir surfacing where Ash'ari grounding is required).
--- Shipping retract-unlock on uncalibrated judge IS the ulama-su' failure
--- in production. Sequenced gate: shadow → diff audit → gold-set augment
--- (50-150 human-labeled items) → recalibrate → unlock.
+-- (e.g., Mu'tazili tafsir on a content_layer interpretive item surfacing
+-- where Ash'ari grounding is required). Shipping retract-unlock on
+-- uncalibrated judge IS the ulama-su' failure in production. Sequenced
+-- gate: shadow → diff audit → gold-set augment (50-200 human-labeled
+-- items per AL-BAYAN-003 extension) → recalibrate → unlock.
 --
 -- This table captures shadow-mode runs so the diff audit (step iii) has
 -- mechanically-comparable data: same query, two retrieval surfaces, same
@@ -16,6 +18,14 @@
 --
 -- Filed because: ARCH-AL-BAYAN-ENCODER-EVAL + EMBED_PIPELINE_v02 backfill
 -- need this table to exist before they can write shadow scores.
+--
+-- Layering terminology per docs/LAYERING.md (ARCH-AL-BAYAN-LAYERING-RECONCILE):
+--   - This migration provisions infrastructure for system_layer L2
+--     (retrieval substrate measurement)
+--   - The candidate sets it logs reference content_layer primary (ayat)
+--     and content_layer interpretive (tafsir_entries). Once juridical
+--     retrieval activates per AL-BAYAN-003 Phase E, content_layer juridical
+--     references will also appear in candidate_set jsonb.
 
 BEGIN;
 
