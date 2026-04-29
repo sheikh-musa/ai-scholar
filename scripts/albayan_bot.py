@@ -13,6 +13,7 @@ Requires:
 
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -180,14 +181,57 @@ def call_ask_scholar(query, chat_id):
         return json.loads(resp.read().decode("utf-8"))
 
 
+# --- Response formatting helpers ---
+
+_SENTENCE_BOUNDARY = re.compile(r'(?<=[.!?])\s+')
+
+
+def _trim_sentences(text: str, max_sentences: int = 3) -> str:
+    """Return the first max_sentences sentences from text."""
+    parts = _SENTENCE_BOUNDARY.split(text.strip())
+    trimmed = ' '.join(parts[:max_sentences])
+    # If we cut, end cleanly with ellipsis only if the last char isn't punctuation
+    if len(parts) > max_sentences and trimmed and trimmed[-1] not in '.!?':
+        trimmed += '…'
+    return trimmed
+
+
+def _select_tafsir(tafsir_list: list, max_entries: int = 2) -> list:
+    """Return at most max_entries tafsir dicts, preferring FTS-matched ones.
+    Filters out Arabic-only placeholders."""
+    valid = [
+        t for t in (tafsir_list or [])
+        if t.get('text') and not t['text'].startswith('[Arabic tafsir')
+    ]
+    # FTS-matched entries first (these are the relevance-ranked excerpts)
+    ordered = sorted(valid, key=lambda t: 0 if t.get('matched_passage') else 1)
+    return ordered[:max_entries]
+
+
+def _select_best_match(matches: list) -> tuple:
+    """Return (primary_match, secondary_refs) where primary has richest tafsir."""
+    if not matches:
+        return None, []
+    # Prefer matches that have at least one FTS-matched tafsir entry
+    for m in matches:
+        if any(t.get('matched_passage') for t in (m.get('tafsir') or [])):
+            rest = [x for x in matches if x is not m]
+            return m, rest[:1]
+    return matches[0], matches[1:2]
+
+
 # --- Response formatting ---
 
 def format_response(data):
-    """Format the ask-scholar Edge Function JSON into a Telegram message.
+    """Format the ask-scholar Edge Function JSON into a concise Telegram message.
+
+    Selects the single best-matched ayah + up to 2 tafsir excerpts (trimmed to
+    3 sentences each). Secondary ayat references are shown as a compact footnote.
+    Tier markers are always preserved per T-1/T-2 invariants.
 
     Edge Function response shape:
       { question, scholar_gate: bool, matches: [MatchEntry], hadith_matches: [...],
-        practice_offramp: str, tiers_used: [str], message?: str, suggested_resources?: [str] }
+        practice_offramp: str, tiers_used: [str], message?: str }
     MatchEntry:
       { surah, ayah, surah_name, arabic, translation, translator,
         tafsir: [{ scholar, source, text, tier,
@@ -208,90 +252,89 @@ def format_response(data):
     parts = ["--- Al-Bayan ---\n"]
     sources = []
 
-    for m in matches:
-        surah_num = m.get("surah", "")
-        ayah_num = m.get("ayah", "")
-        surah_name = m.get("surah_name", "")
-        arabic = m.get("arabic", "")
-        translation = m.get("translation", "")
-        translator = m.get("translator", "")
+    primary, secondary = _select_best_match(matches)
+
+    # Primary ayah
+    if primary:
+        surah_num = primary.get("surah", "")
+        ayah_num = primary.get("ayah", "")
+        surah_name = primary.get("surah_name", "")
+        arabic = primary.get("arabic", "")
+        translation = primary.get("translation", "")
+        translator = primary.get("translator", "")
 
         if arabic:
             parts.append(arabic)
             parts.append("")
 
         if translation:
+            ref = f"{surah_name} ({surah_num}:{ayah_num})" if surah_name else f"{surah_num}:{ayah_num}"
             parts.append(f'"{translation}"')
-            ref_bits = []
-            if translator:
-                ref_bits.append(translator)
-            ref_bits.append(f"{surah_name} ({surah_num}:{ayah_num})" if surah_name else f"{surah_num}:{ayah_num}")
-            parts.append(f"-- {', '.join(ref_bits)}")
+            parts.append(f"— {translator + ', ' if translator else ''}{ref}")
             parts.append(f"[Quoted: Quran {surah_num}:{ayah_num}]")
             parts.append("")
-
-        if surah_num and ayah_num:
             sources.append(f"Quran {surah_num}:{ayah_num}")
 
-        tafsir_list = m.get("tafsir") or []
-        if tafsir_list:
-            parts.append("--- Tafsir ---\n")
-            for t in tafsir_list:
-                scholar = t.get("scholar", "Unknown")
-                source = t.get("source", "")
-                matched = t.get("matched_passage")
-                if matched:
-                    tier = (t.get("matched_passage_tier") or "paraphrased").capitalize()
-                    parts.append(f"{scholar} ({source}) — matched passage:")
-                    parts.append(f'"{matched}"')
-                    parts.append(f"[{tier}: {scholar}, {source}]")
-                    parts.append("")
-                else:
-                    text = t.get("text", "")
-                    if not text or text.startswith("[Arabic tafsir"):
-                        continue
-                    tier = (t.get("tier") or "paraphrased").capitalize()
-                    parts.append(f"{scholar} ({source}):")
-                    parts.append(f'"{text}"')
-                    parts.append(f"[{tier}: {scholar}]")
-                    parts.append("")
+        # Tafsir: up to 2 entries, trimmed to 3 sentences
+        for t in _select_tafsir(primary.get("tafsir") or []):
+            scholar = t.get("scholar", "Unknown")
+            source = t.get("source", "")
+            raw = t.get("matched_passage") or t.get("text", "")
+            if not raw:
+                continue
+            excerpt = _trim_sentences(raw, 3)
+            tier = (t.get("matched_passage_tier") or t.get("tier") or "paraphrased").capitalize()
+            parts.append(f"{scholar}:")
+            parts.append(f'"{excerpt}"')
+            parts.append(f"[{tier}: {scholar}, {source}]")
+            parts.append("")
+            if source and source not in sources:
+                sources.append(source)
 
-                if source and source not in sources:
-                    sources.append(source)
+    # Secondary ayat: compact inline refs only (no full tafsir dump)
+    if secondary:
+        sec = secondary[0]
+        s_num = sec.get("surah", "")
+        a_num = sec.get("ayah", "")
+        s_name = sec.get("surah_name", "")
+        trans = sec.get("translation", "")
+        if trans and s_num and a_num:
+            ref = f"{s_name} ({s_num}:{a_num})" if s_name else f"{s_num}:{a_num}"
+            parts.append(f'Also: "{_trim_sentences(trans, 1)}" — {ref}')
+            parts.append(f"[Quoted: Quran {s_num}:{a_num}]")
+            parts.append("")
+            sources.append(f"Quran {s_num}:{a_num}")
 
+    # Hadith: best 1 entry, trimmed to 2 sentences
     if hadith_matches:
-        parts.append("--- Hadith ---\n")
-        for h in hadith_matches:
-            coll = h.get("collection", "unknown")
-            num = h.get("hadith_number", "")
-            grading = h.get("grading") or ""
-            narrator = h.get("narrator") or ""
-            english = h.get("english", "")
-            header_bits = [coll]
+        h = hadith_matches[0]
+        coll = h.get("collection", "unknown")
+        num = h.get("hadith_number", "")
+        grading = h.get("grading") or ""
+        english = h.get("english", "")
+        if english:
+            excerpt = _trim_sentences(english, 2)
+            header = coll
             if num:
-                header_bits.append(f"#{num}")
+                header += f" #{num}"
             if grading:
-                header_bits.append(grading)
-            if narrator:
-                header_bits.append(narrator)
-            parts.append(f"{' · '.join(header_bits)}:")
-            parts.append(f'"{english}"')
+                header += f" · {grading}"
+            parts.append(f"{header}:")
+            parts.append(f'"{excerpt}"')
             parts.append(f"[Quoted: Hadith, {coll} #{num}]")
             parts.append("")
+            if coll not in sources:
+                sources.append(coll)
 
     practice = data.get("practice_offramp")
     if practice:
-        parts.append("--- Practice ---\n")
         parts.append(practice)
         parts.append("")
 
     parts.append("---")
     if sources:
         parts.append(f"Sources: {', '.join(sources)}")
-    parts.append(
-        "Transparency: All content above is sourced. "
-        "Tier markers [] indicate origin."
-    )
+    parts.append("Tier markers [] indicate content origin.")
     return "\n".join(parts)
 
 
