@@ -31,6 +31,14 @@ v0.2 corpus scope (per AL-BAYAN-003 amendment):
 
 Juridical retrieval activation is a **separate gate** beyond the Q10 sequence — even after Quran retrieval is calibrated and unlocked, juridical layer activation may require its own dual-mode shadow + gold-set per AL-BAYAN-003 gold-set extension.
 
+### Phase 1 juridical corpus — text identity decisions
+
+Per CAI-RESP-103 (8) ruling on Shamela bundling and CAI-RESP-101 (8) source clearance:
+
+- **Safīnat al-Najā** — ingest **only** the matn by Sālim b. Sumayr al-Ḥaḍramī (d. 1271 AH / 1855 CE). Shamela's Special edition often bundles the separate matn متن سفينة الصلاة by ʿAbdullāh b. ʿUmar al-Ḥaḍramī (the muḥaqqiq listed in metadata) — that is a distinct text by a distinct author and would corrupt provenance if conflated. `juridical_texts.text_name = "Safīnat al-Najā"` strictly maps to the Sālim b. Sumayr matn only. Source: shamela.ws Special Shamela matn-only edition; mirrors at usul.ai/t/matn-safinat-al-naja and ketabonline.com/ar/books/25509.
+- **Matn Abī Shujā'** (= al-Ghāyat wa al-Taqrīb) — Aḥmad b. al-Ḥusayn al-Iṣfahānī (d. 593 AH / 1196 CE). Single matn, no bundling concern. Source: shamela.ws/book/11370 (ʿĀlam al-Kutub publisher edition, 48 pages, ترقيم الكتاب موافق للمطبوع); mirror archive.org/details/MatnAbiChedja3.
+- **Pre-ingest chapter-structure assertion** (binding per CAI-RESP-101 (8)): `scripts/juridical/ingest_matn.py` aborts if the parsed baabs don't contain each expected substring in order. Expected chapters declared inline in `EXPECTED_CHAPTER_STRUCTURE` const. Override only via explicit `--skip-chapter-check` flag, which records the bypass in `ingestion_provenance.notes`.
+
 Hadith corpus deferred to v0.3+ per CAI-RESP-094 Q3 ruling — when ingested, uses same encoder + RRF stack; cross-corpus retrieval policy (when do hadith hits ride alongside Quran in candidate set) is a system_layer L3 knowledge-graph question, NOT raw vector similarity.
 
 ---

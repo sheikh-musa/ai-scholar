@@ -31,20 +31,17 @@ app = modal.App("al-bayan-encoder")
 # Image built from local Dockerfile in this same directory
 image = (
     modal.Image.from_dockerfile(path="modal/encoder/Dockerfile", add_python="3.11")
-    .env({
-        "ENCODER_MODEL": "bge-m3",  # default per CAI-RESP-094; swap to jina-v3 if it wins ENCODER-EVAL
-        "HF_HOME": "/cache/hf",
-    })
+    # ENCODER_MODEL set at Dockerfile build-time via ARG; HF_HOME pinned to
+    # /opt/hf-cache (image-immutable). No env override needed at deploy time.
+    # To swap encoders, rebuild image with --build-arg ENCODER_MODEL=jina-v3.
 )
-
-# Persistent cache for model weights — survives container restarts within
-# the same Modal volume; cleaned only on explicit invalidation
-volume = modal.Volume.from_name("al-bayan-encoder-cache", create_if_missing=True)
 
 
 @app.function(
     image=image,
-    volumes={"/cache": volume},
+    # No Volume mount — weights baked into image per CAI-RESP-095 CHECK 5
+    # + CAI-RESP-107. Container is fully self-contained; no read-write volume
+    # for query state, no read-write volume for weights cache.
     region="ap-southeast",  # data residency per CAI-RESP-095 check 3 — pin to APAC
     timeout=120,             # per request; embedding is fast, this is generous
     container_idle_timeout=300,  # scale-to-zero after 5 min idle

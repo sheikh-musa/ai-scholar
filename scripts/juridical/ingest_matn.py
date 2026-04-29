@@ -62,6 +62,60 @@ BAAB_SPLIT_PATTERNS = [
     re.compile(r"^\s*(كتابُ?)", re.MULTILINE),
 ]
 
+# Per CAI-RESP-101 (8) binding pre-ingest verification: each known matn ships
+# with its expected chapter structure. ingest aborts (raises) if the segments
+# don't contain each expected substring in order. Override with --skip-chapter-
+# check (logs a warning + records skipped flag in ingestion_provenance.notes).
+#
+# Substrings are deliberately partial (radix only, no diacritics, no construct-
+# state) so they match across the small variations between Shamela editions
+# (e.g. كتاب الطهارة vs بَابُ الطَّهَارَةِ both contain طهار).
+EXPECTED_CHAPTER_STRUCTURE: dict[str, list[str]] = {
+    "Safīnat al-Najā": [
+        "توحيد", "بلوغ", "طهار", "صلا", "زكا", "صوم",
+    ],
+    "Matn Abī Shujā'": [
+        "طهار", "صلا", "زكا", "صيام", "حج", "بيوع",
+        "ميراث", "نكاح", "جنايا", "حدود", "جهاد", "أطعم",
+        "مسابق", "أيمان", "عتق",
+    ],
+}
+
+
+def _strip_arabic_diacritics(s: str) -> str:
+    """Strip combining marks (Mn) + tatweel so radix-only needles match
+    diacritized haystacks. Same discipline as tajweed.ts compare-time strip."""
+    s = unicodedata.normalize("NFC", s)
+    return "".join(
+        c for c in s
+        if c != "ـ" and unicodedata.category(c) != "Mn"
+    )
+
+
+def assert_chapter_structure(text_name: str, segments: list[tuple[str, str]]) -> None:
+    """Raises ValueError if expected baab substrings are missing or out of order.
+
+    Per CAI-RESP-101 (8) binding requirement. Substring match is on the
+    diacritic-stripped segment title (first line of each baab), not the full body.
+    """
+    expected = EXPECTED_CHAPTER_STRUCTURE.get(text_name)
+    if not expected:
+        return  # unknown text — no assertion to make
+    bare_titles = [_strip_arabic_diacritics(t) for t, _ in segments]
+    cursor = 0
+    for needle in expected:
+        for i in range(cursor, len(bare_titles)):
+            if needle in bare_titles[i]:
+                cursor = i + 1
+                break
+        else:
+            raise ValueError(
+                f"chapter-structure assertion failed for {text_name!r}: "
+                f"expected baab containing {needle!r} after position {cursor}; "
+                f"none found among remaining titles. Override with --skip-chapter-check "
+                f"if this is intentional (e.g. testing with truncated source)."
+            )
+
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -134,6 +188,9 @@ def main():
     parser.add_argument("--verified-by", required=True, dest="verified_by_identity")
     parser.add_argument("--notes", default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-chapter-check", action="store_true",
+                        help="Override the CAI-RESP-101 (8) chapter-structure assertion. "
+                             "Records skipped flag in ingestion_provenance.notes.")
     args = parser.parse_args()
 
     if not args.source_file.exists():
@@ -162,6 +219,19 @@ def main():
         print(f"  … {len(segments) - 5} more")
     print()
 
+    # CAI-RESP-101 (8) binding pre-ingest chapter-structure assertion
+    if args.skip_chapter_check:
+        print(f"WARNING: --skip-chapter-check set; CAI-RESP-101 (8) assertion bypassed.")
+        skip_note = " [chapter-structure check SKIPPED via --skip-chapter-check]"
+    else:
+        try:
+            assert_chapter_structure(args.text_name, segments)
+            print(f"chapter-structure assertion: OK")
+        except ValueError as exc:
+            print(f"\nABORT: {exc}")
+            return 1
+        skip_note = ""
+
     if args.dry_run:
         print("dry-run — exiting without ingesting")
         return 0
@@ -174,7 +244,7 @@ def main():
         "license_declaration": args.license_declaration,
         "source_file_sha256": file_sha,
         "verified_by_identity": args.verified_by_identity,
-        "notes": args.notes,
+        "notes": (args.notes or "") + skip_note or None,
     })
     provenance_id = provenance[0]["id"]
     print(f"  provenance_id: {provenance_id[:12]}…")
