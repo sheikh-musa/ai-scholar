@@ -36,6 +36,7 @@ SUPABASE_URL = (os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 GOLD_SET_PATH = Path("evals/encoder_eval_gold_set.json")
+CANDIDATES_PATH = Path("evals/encoder_eval_gold_set_candidates.json")
 
 # Pre-seed candidate queries — Musa edits / accepts / rejects each.
 # 30 each, organized by category per ARCH-AL-BAYAN-ENCODER-EVAL spec.
@@ -187,43 +188,60 @@ def save_gold(rows):
     GOLD_SET_PATH.write_text(json.dumps(rows, ensure_ascii=False, indent=2))
 
 
-def interactive_label(query, language, suggestions):
+def interactive_label(query, language, candidates):
+    """candidates: list of {ayah_id, ref, excerpt, scholar, rank} pre-seeded
+    by pre_seed_candidates.py — Musa accepts by index or overrides by ref."""
     print(f"\n{'='*72}")
     print(f"  [{language.upper()}] {query}")
     print(f"{'='*72}")
-    if suggestions:
-        print(f"  Top FTS candidates (verify or override):")
-        for i, s in enumerate(suggestions, 1):
-            ref = f"{s.get('surah_number')}:{s.get('ayah_number')}"
-            translation = (s.get('english_translation') or '')[:100]
-            print(f"    [{i}] {ref}  {translation}…")
+    if candidates:
+        print(f"  Pre-seeded FTS candidates (accept by index):")
+        for i, c in enumerate(candidates, 1):
+            ref = c.get("ref", "?")
+            excerpt = (c.get("excerpt") or "")[:100]
+            print(f"    [{i}] {ref}  {excerpt}…")
     else:
-        print(f"  (no FTS candidates — manual entry required)")
+        print(f"  (no pre-seeded candidates — manual entry required)")
 
-    print(f"\n  Enter expected ayah refs (e.g., '2:153 17:36 ; notes here')")
-    print(f"  Or 's' to skip, 'q' to quit & save")
+    print(f"\n  Accept by index: '1 2 3'  |  Override: '2:153 17:36'  |  Mixed: '1 4 ; 2:255'")
+    print(f"  Append notes after ';'  |  's' skip  |  'q' quit & save")
     raw = input("  > ").strip()
     if raw.lower() == "q":
         return None
     if raw.lower() == "s":
         return "skip"
 
-    # Parse "S:A S:A ; notes"
     parts = raw.split(";", 1)
-    refs_str = parts[0].strip()
+    tokens_str = parts[0].strip()
     notes = parts[1].strip() if len(parts) > 1 else ""
 
     expected_ayah_ids = []
-    for ref in refs_str.split():
-        if ":" not in ref:
-            continue
-        try:
-            s, a = ref.split(":")
-            rows = api_get(f"ayat?select=id&surah_number=eq.{int(s)}&ayah_number=eq.{int(a)}")
-            if rows:
-                expected_ayah_ids.append(rows[0]["id"])
-        except Exception as e:
-            print(f"  skip ref {ref}: {e}")
+    for tok in tokens_str.split():
+        if ":" in tok:
+            # explicit S:A override
+            try:
+                s, a = tok.split(":")
+                rows = api_get(
+                    f"ayat?select=id&surah_number=eq.{int(s)}&ayah_number=eq.{int(a)}"
+                )
+                if rows:
+                    expected_ayah_ids.append(rows[0]["id"])
+            except Exception as e:
+                print(f"  skip ref {tok}: {e}")
+        elif tok.isdigit():
+            # candidate index
+            idx = int(tok) - 1
+            if 0 <= idx < len(candidates):
+                ayah_id = candidates[idx].get("ayah_id")
+                if ayah_id:
+                    expected_ayah_ids.append(ayah_id)
+            else:
+                print(f"  skip index {tok}: out of range")
+
+    # dedupe preserving order
+    seen = set()
+    expected_ayah_ids = [x for x in expected_ayah_ids
+                         if not (x in seen or seen.add(x))]
 
     if not expected_ayah_ids:
         print(f"  no valid refs parsed; skipping this query")
@@ -239,6 +257,32 @@ def interactive_label(query, language, suggestions):
     }
 
 
+def load_candidates():
+    """Load pre-seeded candidates produced by pre_seed_candidates.py.
+    Returns dict keyed by query → list of candidate dicts.
+    Falls back to live FTS suggestion if file missing."""
+    if not CANDIDATES_PATH.exists():
+        print(f"[warn] no pre-seed file at {CANDIDATES_PATH} — falling back to live FTS")
+        return None
+    rows = json.loads(CANDIDATES_PATH.read_text())
+    return {r["query"]: r["candidates"] for r in rows}
+
+
+def live_fts_candidates(query):
+    """Fallback when no pre-seed file exists — call FTS once with the
+    raw query (works for English; Arabic/Bahasa likely yield nothing)."""
+    rows = suggest_candidates(query)
+    return [
+        {
+            "ayah_id": r.get("ayah_id"),
+            "ref": f"{r.get('surah_number')}:{r.get('ayah_number')}",
+            "excerpt": (r.get("english_translation") or r.get("english_text") or "")[:140],
+            "scholar": r.get("scholar_name"),
+        }
+        for r in rows
+    ]
+
+
 def main():
     if not SUPABASE_KEY:
         sys.exit("SUPABASE_SERVICE_ROLE_KEY not set in .env")
@@ -247,6 +291,7 @@ def main():
     print(f"Gold-set curation Phase {phase}")
     print(f"Output: {GOLD_SET_PATH}")
 
+    candidates_map = load_candidates()
     existing = load_existing_gold()
     existing_queries = {r["query"] for r in existing}
     print(f"Existing entries: {len(existing)}")
@@ -268,8 +313,11 @@ def main():
     print(f"This phase: {len(queries)} new queries to label\n")
 
     for query, language in queries:
-        suggestions = suggest_candidates(query) if language == "en" else []
-        result = interactive_label(query, language, suggestions)
+        if candidates_map is not None:
+            cands = candidates_map.get(query, [])
+        else:
+            cands = live_fts_candidates(query)
+        result = interactive_label(query, language, cands)
         if result is None:
             print("\nSaving and quitting…")
             break
