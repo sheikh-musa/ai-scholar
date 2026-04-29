@@ -1,9 +1,9 @@
 # INV-8 Audit-Trail Substrate — Scholar-of-Record Question
 
-**Status:** Draft awaiting scholar-of-record pairing (per VISION-003 INV-7)
-**Parent:** VISION-003 INV-8, CAI-RESP-062 (scholar ruling gate)
-**Owner:** cc-scholar (drafting); scholar-of-record (ruling)
-**Blocks:** all Solana-anchoring work on Al-Bayān rulings
+**Status:** QUEUED for L7 cycle 2–3 review (per CAI-RESP-110, 2026-04-29). Was BLOCKED pending pairing; pairing landed.
+**Parent:** VISION-003 INV-8, CAI-RESP-062 (scholar ruling gate), CAI-RESP-110 (L7 pairing + cycle sequencing)
+**Owner:** cc-scholar (drafting); `<L7_SCHOLAR_OF_RECORD>` (ruling, post-cycle-1)
+**Blocks:** Solana-anchoring path on Al-Bayān rulings; does NOT block Postgres-Merkle fallback (already shipping path)
 
 ## The question (for the scholar)
 
@@ -53,6 +53,8 @@ Ruling will be filed to `strategic_decisions` as its own decision ref (`AL-BAYAN
 
 ## Process to pair a scholar
 
-Open item — scholar-of-record pairing protocol is not yet defined in the Wingmen stack (per VISION-003 INV-7 and AL-BAYAN-001). When that protocol lands, this question is first in queue.
+**Update 2026-04-29 (CAI-RESP-110):** L7 scholar-of-record pairing protocol has been ruled. Named candidate paired (Shāfi'ī, fi sabilillah, Part 6(iii) graceful-conversion clause active). PoS-halal routing to L7 is **confirmed but sequenced cycle 2–3**, not cycle 1. Cycle 1 is the WAQFTOOL-01 Hanafi → Shāfi'ī amendment (`docs/CAI-WAQFTOOL-AMEND-001-shafii-amendment.md`) — chosen for low blast radius before this question (highest-stakes ruling) is loaded onto the new pipeline.
 
-Until pairing lands, **INV-8 implementation work is blocked on the Postgres-Merkle fallback path** (see `docs/INV-8-postgres-merkle-fallback.md`). The fallback ships as the v0.1 audit substrate; Solana anchoring, if the ruling permits, is a later migration.
+This question therefore moves from BLOCKED → QUEUED. It enters the L7 review queue once cycle-1 (WAQFTOOL amendment) closes successfully and any L7-PROCESS-001 SOP gaps surfaced during cycle-1 are remediated. v0.1 audit substrate continues to ship via the Postgres-Merkle fallback (`docs/INV-8-postgres-merkle-fallback.md`); a positive ruling on Solana is a later migration; a negative ruling makes the fallback the permanent substrate.
+
+Open item: F-3 refusal posture for ruling-class queries remains active until L7 onboarding doc is signed and cycle-1 completes (per CAI-RESP-110).
