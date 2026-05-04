@@ -18,6 +18,7 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { canonicalJson } from "./canonical-json.ts";
 import type { QueryType } from "./query-type-classifier.ts";
+import type { OutputTier } from "./compose-types.ts";
 
 export interface PersistRulingFields {
   telegram_id_hash: string;
@@ -27,7 +28,7 @@ export interface PersistRulingFields {
   query_text: string;
   query_lang?: string;
   response_text: string;
-  output_tier: "quoted" | "paraphrased" | "inferred" | "ai-generated";
+  output_tier: OutputTier;
   matched_passage_id?: string | null;
   retrieval_ids?: string[];
   scholar_of_record?: string | null;
