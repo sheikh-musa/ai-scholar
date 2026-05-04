@@ -29,9 +29,17 @@ Deno.test("compose output with Arabic NOT in passages — fails", () => {
 });
 
 Deno.test("compose output with Arabic differing only in NFC form — passes", () => {
-  // Same letters, different normalization form
-  const passage = { english_text: "x", arabic_text: "بِسْمِ" }; // composed form
-  const compose = "He recited بِسْمِ in the morning."; // decomposed form
-  const r = validateAyahCitations(compose, [passage]);
+  // U+0623 (ALEF WITH HAMZA ABOVE) decomposes to U+0627 + U+0654 in NFD.
+  // Three Arabic words; passage in NFC, compose-text in NFD. Validator must
+  // normalize both before substring match.
+  const nfcArabic = "أللَّهُ لَا إِلَٰهَ"; // 3 words, NFC
+  const nfdArabic = nfcArabic.normalize("NFD"); // decomposed form
+  // Guard: forces fixture to be non-vacuous. If the chosen Arabic ever lacks
+  // decomposable characters, this assertion fails loudly rather than the test
+  // silently passing for the wrong reason.
+  assertEquals(nfcArabic === nfdArabic, false);
+  const passage = { english_text: "x", arabic_text: nfcArabic };
+  const r = validateAyahCitations(`He said: ${nfdArabic} — and that is true.`, [passage]);
   assertEquals(r.valid, true);
+  assertEquals(r.violations.length, 0);
 });
