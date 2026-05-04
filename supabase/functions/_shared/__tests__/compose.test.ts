@@ -62,3 +62,25 @@ Deno.test("tier rule — inferred when synthesizing across ≥3 passages", async
   );
   assertEquals(result.tier, "inferred");
 });
+
+Deno.test("compose populates ayah_violations when adapter emits Arabic not in passages", async () => {
+  // Adapter fabricates a 3-word Arabic phrase (Surah Al-Ikhlas opening)
+  // that is NOT present in any passage's arabic_text. The validator
+  // should detect this and surface it in ayah_violations. compose() must
+  // thread the violations through to the result.
+  const fabricatedArabic = "قُلْ هُوَ اللَّهُ"; // 3-word run, not in PASSAGES
+  class FabricatingAdapter {
+    name = "fabricator";
+    async generate() { return { text: `Allah is One — ${fabricatedArabic} — as revealed.`, latency_ms: 5 }; }
+  }
+  const passagesWithArabic = [
+    { passage_id: "p1", english_text: "x", scholar_name: "Ibn Kathir", arabic_text: "اللَّهُ لَا إِلَٰهَ إِلَّا هُوَ", output_tier: "paraphrased" as const },
+  ];
+  const result = await compose(
+    { query: "x", passages: passagesWithArabic, prompt_version: "test-v1" },
+    new FabricatingAdapter() as any,
+  );
+  assertEquals(result.ayah_violations.length, 1);
+  assertStringIncludes(result.ayah_violations[0], "قُلْ");
+  assertEquals(result.timed_out, false);
+});

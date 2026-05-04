@@ -47,6 +47,7 @@ export interface ComposeResult {
   latency_ms: number;
   provider: string; // populated from LLMProvider.name
   prompt_version: string;
+  timed_out: boolean; // true when 8s timeout fired and provider response was abandoned
 }
 
 export interface LLMProvider {
