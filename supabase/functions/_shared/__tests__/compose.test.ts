@@ -32,6 +32,7 @@ Deno.test("compose times out — falls back with timeout marker", async () => {
   );
   assertStringIncludes(result.text, "[compose-timeout]");
   assertEquals(result.tier, "paraphrased");
+  assertEquals(result.timed_out, true);
 });
 
 Deno.test("tier rule — quoted iff verbatim substring of single passage", async () => {
