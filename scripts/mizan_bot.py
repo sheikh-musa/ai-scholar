@@ -28,6 +28,8 @@ SUPABASE_URL = "https://tscuymavysscrvoberrr.supabase.co"
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzY3V5bWF2eXNzY3J2b2JlcnJyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMjEzOTQsImV4cCI6MjA4OTg5NzM5NH0.qO3XH34pDVhlxDRcKs_TBaOJtoxGiAJGBLfGpThzyDw"
 CLAUDE_PATH = os.path.expanduser("~/.local/bin/claude")
+# AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135
+PERSIST_FUNCTION_URL = SUPABASE_URL + "/functions/v1/persist-mizan-ruling"
 
 SURAH_NAMES = {
     1:"Al-Fatihah",2:"Al-Baqarah",3:"Aal-Imran",4:"An-Nisa",5:"Al-Ma'idah",
@@ -1115,6 +1117,40 @@ Respond directly to the user's question:"""
         return f"Error: {str(e)}"
 
 
+# --- Persistence helper (AL-BAYAN-COMPOSE-001 / CAI-RESP-135) ---
+def persist_emission(chat_id, query_text, response_text, retrieval_ids=None):
+    """POST to persist-mizan-ruling Edge Function.
+
+    Fail-soft: log on error, never raise. Bot's user-facing UX must not break
+    if persistence is unavailable. Per CAI-RESP-135, governance integrity is
+    critical but bot responsiveness is not negotiable mid-conversation.
+    """
+    payload = {
+        "telegram_id": chat_id,
+        "query_text": query_text[:2000],   # keep request small
+        "response_text": response_text[:5000],
+        "retrieval_ids": retrieval_ids or [],
+    }
+    key = SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(PERSIST_FUNCTION_URL, data=data, headers={
+        "apikey": key,
+        "Authorization": "Bearer " + key,
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            print(f"  -> persisted: interaction_id={result.get('interaction_id', '?')[:8]}")
+            return result
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8") if hasattr(e, "read") else ""
+        print(f"  -> persistence failed (HTTP {e.code}): {body[:200]}")
+    except Exception as e:
+        print(f"  -> persistence failed: {type(e).__name__}: {str(e)[:200]}")
+    return None
+
+
 # --- Telegram helpers ---
 def tg_request(method, data=None):
     """Make a Telegram Bot API request."""
@@ -1365,6 +1401,10 @@ def main():
                 send_message(chat_id, answer)
                 print(f"  -> Response sent ({len(answer)} chars)")
                 print(f"  >> {answer[:300]}{'...' if len(answer) > 300 else ''}")
+
+                # AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135 — persist after send,
+                # fail-soft so persistence outages don't block user replies.
+                persist_emission(chat_id, text, answer)
 
         except urllib.error.URLError as e:
             print(f"Network error: {e}. Retrying in 5s...")
