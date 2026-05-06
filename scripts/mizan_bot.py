@@ -58,6 +58,135 @@ SURAH_NAMES = {
 FIQH_KEYWORDS = {"halal", "haram", "permissible", "ruling", "allowed", "forbidden",
                   "fard", "wajib", "makruh", "mustahab", "fatwa"}
 
+# --- Hadith collection aliases (built once at module load) ---
+# Maps lowercase alias strings → collection_id UUID.
+# Longest-match-wins is enforced in match_hadith_collection_alias().
+HADITH_COLLECTION_ALIASES: dict = {
+    # Sahih al-Bukhari
+    "sahih al-bukhari": "8ecef668-0597-473b-a812-63b2d8c89dc6",
+    "sahih bukhari": "8ecef668-0597-473b-a812-63b2d8c89dc6",
+    "al-bukhari": "8ecef668-0597-473b-a812-63b2d8c89dc6",
+    "al bukhari": "8ecef668-0597-473b-a812-63b2d8c89dc6",
+    "imam bukhari": "8ecef668-0597-473b-a812-63b2d8c89dc6",
+    "bukhari": "8ecef668-0597-473b-a812-63b2d8c89dc6",
+    # Sahih Muslim
+    "sahih al-muslim": "0dd871af-7513-46c0-a5a1-5f1508a52a8c",
+    "sahih muslim": "0dd871af-7513-46c0-a5a1-5f1508a52a8c",
+    "imam muslim": "0dd871af-7513-46c0-a5a1-5f1508a52a8c",
+    "al-muslim": "0dd871af-7513-46c0-a5a1-5f1508a52a8c",
+    "muslim": "0dd871af-7513-46c0-a5a1-5f1508a52a8c",
+    # Sunan Abi Dawud
+    "sunan abu dawud": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
+    "sunan abu dawood": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
+    "abu dawud": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
+    "abu dawood": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
+    "abudawud": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
+    # Jami' at-Tirmidhi
+    "jami at-tirmidhi": "837b319e-1a11-4794-8405-ab37712c97b2",
+    "jami al-tirmidhi": "837b319e-1a11-4794-8405-ab37712c97b2",
+    "sunan tirmidhi": "837b319e-1a11-4794-8405-ab37712c97b2",
+    "at-tirmidhi": "837b319e-1a11-4794-8405-ab37712c97b2",
+    "al-tirmidhi": "837b319e-1a11-4794-8405-ab37712c97b2",
+    "tirmidhi": "837b319e-1a11-4794-8405-ab37712c97b2",
+    # Sunan an-Nasa'i
+    "sunan an-nasai": "3ee87efc-1162-4431-b211-6f1c42c29353",
+    "sunan nasai": "3ee87efc-1162-4431-b211-6f1c42c29353",
+    "an-nasai": "3ee87efc-1162-4431-b211-6f1c42c29353",
+    "nasai": "3ee87efc-1162-4431-b211-6f1c42c29353",
+    # Sunan Ibn Majah
+    "sunan ibn majah": "e51000dc-5c1b-4ef0-8c03-849f9167e10e",
+    "ibn majah": "e51000dc-5c1b-4ef0-8c03-849f9167e10e",
+    "ibnmajah": "e51000dc-5c1b-4ef0-8c03-849f9167e10e",
+    # Nawawi's 40 Hadith
+    "nawawi 40": "84c65102-f2ac-423d-87aa-5483e45c3927",
+    "40 hadith nawawi": "84c65102-f2ac-423d-87aa-5483e45c3927",
+    "40 hadith": "84c65102-f2ac-423d-87aa-5483e45c3927",
+    "arbain nawawi": "84c65102-f2ac-423d-87aa-5483e45c3927",
+    "arbain": "84c65102-f2ac-423d-87aa-5483e45c3927",
+    "nawawi40": "84c65102-f2ac-423d-87aa-5483e45c3927",
+    # Riyad al-Salihin
+    "riyad al-salihin": "2d75d361-b333-4d45-b0f7-c34779f51fba",
+    "riyadussalihin": "2d75d361-b333-4d45-b0f7-c34779f51fba",
+    "riyad us salihin": "2d75d361-b333-4d45-b0f7-c34779f51fba",
+    "riyad al salihin": "2d75d361-b333-4d45-b0f7-c34779f51fba",
+    "gardens of the righteous": "2d75d361-b333-4d45-b0f7-c34779f51fba",
+    "riyadh al-salihin": "2d75d361-b333-4d45-b0f7-c34779f51fba",
+}
+
+
+def match_hadith_collection_alias(text: str):
+    """
+    Scan *text* for any known hadith collection alias.
+    Returns collection_id (UUID str) if found, else None.
+    Longest match wins to avoid short aliases shadowing longer ones.
+    """
+    t = text.lower()
+    best_len = 0
+    best_id = None
+    for alias, coll_id in HADITH_COLLECTION_ALIASES.items():
+        if alias in t and len(alias) > best_len:
+            best_len = len(alias)
+            best_id = coll_id
+    return best_id
+
+
+# --- Sahaba narrator detection (built once at module load) ---
+# Maps lowercase alias → canonical narrator fragment used in ILIKE filter.
+SAHABA_NARRATORS: list = [
+    # (alias, canonical_fragment)  — longest aliases first for longest-match
+    ("al-nawwas ibn sam'an", "Nawwas"),
+    ("al-nawwas ibn saman", "Nawwas"),
+    ("al-nawwas ibn sam'an", "Nawwas"),
+    ("al-nawwas", "Nawwas"),
+    ("nawwas ibn sam'an", "Nawwas"),
+    ("nawwas ibn saman", "Nawwas"),
+    ("nawwas", "Nawwas"),
+    ("abu sa'id al-khudri", "Abu Sa"),
+    ("abu sa'id al-khudri", "Abu Sa"),
+    ("abu sa'id", "Abu Sa"),
+    ("abu said al-khudri", "Abu Sa"),
+    ("abu said", "Abu Sa"),
+    ("abu hurayrah", "Abu Hurairah"),
+    ("abu hurayra", "Abu Hurairah"),
+    ("abu hurairah", "Abu Hurairah"),
+    ("abu huraira", "Abu Hurairah"),
+    ("sayyidah aisha", "Aisha"),
+    ("a'isha", "Aisha"),
+    ("aisha", "Aisha"),
+    ("abdullah ibn abbas", "Ibn Abbas"),
+    ("ibn 'abbas", "Ibn Abbas"),
+    ("ibn abbas", "Ibn Abbas"),
+    ("abdullah ibn umar", "Ibn Umar"),
+    ("ibn umar", "Ibn Umar"),
+    ("anas ibn malik", "Anas"),
+    ("anas", "Anas"),
+    ("jabir ibn abdullah", "Jabir"),
+    ("jabir", "Jabir"),
+    ("sayyiduna abu bakr", "Abu Bakr"),
+    ("abu bakr", "Abu Bakr"),
+    ("umar ibn al-khattab", "Umar"),
+    ("umar ibn al-khattab", "Umar"),
+    ("umar", "Umar"),
+    ("uthman ibn affan", "Uthman"),
+    ("uthman", "Uthman"),
+    ("ali ibn abi talib", "Ali"),
+    ("ali", "Ali"),
+]
+
+
+def match_sahaba_narrator(text: str):
+    """
+    Scan *text* for any known sahaba narrator alias.
+    Returns canonical narrator fragment (str) if found, else None.
+    First matching alias (longest listed first) wins.
+    """
+    t = text.lower()
+    for alias, canonical in SAHABA_NARRATORS:
+        if alias in t:
+            return canonical
+    return None
+
+
 # --- Surah alias lookup (built once at module load) ---
 # Maps normalised alias strings → surah number.
 # Normalisation: lowercase, strip "al-" / "al " prefix, remove hyphens + apostrophes.
@@ -595,6 +724,114 @@ def search_hadith_fts(keywords, limit=5):
         return {"results": []}
 
 
+def _enrich_hadith_rows(rows):
+    """Fetch collection names for a list of hadith rows that still carry collection_id.
+    Mutates rows in-place; returns the same list."""
+    if not rows:
+        return rows
+    col_ids = list({r["collection_id"] for r in rows if r.get("collection_id")})
+    if col_ids:
+        cols = supabase_get("hadith_collections", {
+            "id": f"in.({','.join(col_ids)})",
+            "select": "id,name,full_name",
+        })
+        col_map = {c["id"]: c for c in cols}
+        for r in rows:
+            c = col_map.get(r.get("collection_id"), {})
+            r["collection"] = c.get("name", "unknown")
+            r["collection_full"] = c.get("full_name", "Unknown")
+            if not r.get("grading") and r.get("collection") in ("bukhari", "muslim"):
+                r["grading"] = "sahih"
+            r["english_text"] = r.get("english_text", "")[:500]
+            r.pop("collection_id", None)
+    return rows
+
+
+def search_hadith_fts_v2(keywords, limit=5, preferred_collection_id=None,
+                          preferred_narrator=None, mode="auto"):
+    """Enhanced hadith search with:
+      - Gap A fix: optional collection filter (preferred_collection_id)
+      - Gap B fix: AND-mode search (multi-ILIKE intersection) with OR fallback
+      - Gap C fix: optional narrator ILIKE search merged with keyword results
+      - mode='auto': try AND first, fall back to OR if AND returns < 3 hits.
+
+    Uses PostgREST direct ILIKE queries (option b) — no migration needed.
+    Falls back to existing search_hadith_fts OR semantics when AND yields < 3 results.
+    """
+    word_list = [w for w in (keywords if isinstance(keywords, list) else [keywords])
+                 if len(w) > 2]
+
+    all_results = []
+    seen_ids = set()
+
+    # --- AND-mode search (Gap B) ---
+    # Build PostgREST params: select with multiple ilike filters in and() clause
+    and_rows = []
+    if word_list:
+        select_cols = "hadith_number,english_text,grading,narrator,collection_id,id"
+        and_params = {
+            "select": select_cols,
+            "limit": str(limit * 3),  # Over-fetch before dedup + cap
+        }
+        if preferred_collection_id:
+            and_params["collection_id"] = f"eq.{preferred_collection_id}"
+        if mode in ("auto", "and") and len(word_list) >= 2:
+            # PostgREST and() filter: and=(english_text.ilike.%w1%,english_text.ilike.%w2%)
+            and_clauses = ",".join(f"english_text.ilike.%25{urllib.parse.quote(w)}%25"
+                                   for w in word_list[:4])
+            try:
+                url_path = f"hadiths?select={urllib.parse.quote(select_cols, safe=',')}&and=({and_clauses})"
+                if preferred_collection_id:
+                    url_path += f"&collection_id=eq.{preferred_collection_id}"
+                url_path += f"&limit={limit * 3}"
+                and_rows = supabase_get(url_path)
+            except Exception as e:
+                print(f"  AND search failed ({e}), will rely on OR fallback")
+                and_rows = []
+
+    # If AND gave enough results, use them; otherwise fall back to OR via existing FTS
+    if len(and_rows) >= 3:
+        _enrich_hadith_rows(and_rows)
+        for r in and_rows:
+            rid = r.get("id") or r.get("hadith_number", "")
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                r.pop("id", None)
+                all_results.append(r)
+    else:
+        # OR fallback — use existing search_hadith_fts logic
+        or_data = search_hadith_fts(keywords, limit=limit)
+        for r in or_data.get("results", []):
+            rid = r.get("hadith_number", "")
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                all_results.append(r)
+
+    # --- Narrator search (Gap C) ---
+    if preferred_narrator and len(all_results) < limit:
+        try:
+            nar_rows = supabase_get("hadiths", {
+                "narrator": f"ilike.%{preferred_narrator}%",
+                "select": "hadith_number,english_text,grading,narrator,collection_id,id",
+                "limit": str(limit),
+            })
+            if preferred_collection_id:
+                nar_rows = [r for r in nar_rows
+                            if r.get("collection_id") == preferred_collection_id]
+            _enrich_hadith_rows(nar_rows)
+            for r in nar_rows:
+                rid = r.get("id") or r.get("hadith_number", "")
+                if rid not in seen_ids:
+                    seen_ids.add(rid)
+                    r.pop("id", None)
+                    all_results.append(r)
+        except Exception as e:
+            print(f"  Narrator search failed ({e})")
+
+    # Cap and return
+    return {"results": all_results[:limit]}
+
+
 def lookup_hadith(collection, number):
     """Look up a specific hadith by collection and number."""
     cols = supabase_get("hadith_collections", {
@@ -676,6 +913,11 @@ def gather_context(question):
         hnum = hadith_match.group(2)
         data = lookup_hadith(col_name, hnum)
         context_parts.append(f"HADITH LOOKUP {col_name} #{hnum}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
+
+    # Gap A/C fix: detect collection-name alias (without number) + sahaba narrator
+    # These flags are used later in the FTS block to prefer a collection / narrator.
+    preferred_collection_id = match_hadith_collection_alias(question)
+    preferred_narrator = match_sahaba_narrator(question)
 
     # If we got a direct lookup, that's usually enough
     if context_parts and _ctx_size(context_parts) > 3000:
@@ -785,10 +1027,18 @@ def gather_context(question):
                 )
 
         # Hadith FTS (always search if question wants it, or as supplement)
+        # Gap A/B/C fix: use search_hadith_fts_v2 with collection + narrator preferences
+        # and AND-mode multi-keyword search (with OR fallback if AND < 3 results).
         has_hadith = any("HADITH" in p for p in context_parts)
         if not has_hadith and _ctx_size(context_parts) < MAX_CONTEXT:
             hlimit = 5 if wants_hadith else 3
-            data = search_hadith_fts(words[:3], limit=hlimit)
+            data = search_hadith_fts_v2(
+                words[:4],
+                limit=hlimit,
+                preferred_collection_id=preferred_collection_id,
+                preferred_narrator=preferred_narrator,
+                mode="auto",
+            )
             if data["results"]:
                 label = "HADITH SEARCH" if wants_hadith else "RELATED HADITHS"
                 context_parts.append(f"{label}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
