@@ -58,6 +58,153 @@ SURAH_NAMES = {
 FIQH_KEYWORDS = {"halal", "haram", "permissible", "ruling", "allowed", "forbidden",
                   "fard", "wajib", "makruh", "mustahab", "fatwa"}
 
+# --- Surah alias lookup (built once at module load) ---
+# Maps normalised alias strings → surah number.
+# Normalisation: lowercase, strip "al-" / "al " prefix, remove hyphens + apostrophes.
+def _build_surah_aliases() -> dict:
+    """Build alias → surah_number mapping from SURAH_NAMES at import time."""
+    aliases: dict = {}
+
+    def _norm(s: str) -> str:
+        s = s.lower().strip()
+        for prefix in ("al-", "al ", "an-", "an ", "at-", "at ", "as-", "as ",
+                       "az-", "az ", "ad-", "ad ", "ar-", "ar ", "ash-", "ash "):
+            if s.startswith(prefix):
+                s = s[len(prefix):]
+                break
+        return s.replace("-", "").replace("'", "").replace("'", "").replace("ā", "a").replace("ī", "i").replace("ū", "u").replace("ḥ", "h").replace("ṭ", "t").replace("ā", "a")
+
+    for num, name in SURAH_NAMES.items():
+        # Full name (lowercased)
+        full = name.lower()
+        aliases[full] = num
+        # Without "Al-" etc.
+        stripped = _norm(name)
+        if stripped:
+            aliases[stripped] = num
+        # Without spaces
+        nospace = stripped.replace(" ", "")
+        if nospace:
+            aliases[nospace] = num
+
+    # Hand-coded transliteration variants for frequently-asked surahs
+    extra: dict = {
+        # Al-Fatihah
+        "fatiha": 1, "fatihah": 1, "al fatiha": 1, "al fatihah": 1,
+        "al-fatiha": 1, "al-fatihah": 1, "fatiha": 1, "opening": 1,
+        # Al-Baqarah
+        "baqara": 2, "baqarah": 2, "al baqara": 2, "al baqarah": 2,
+        "al-baqara": 2, "al-baqarah": 2, "cow": 2,
+        # Aal-Imran
+        "imran": 3, "aal imran": 3, "ali imran": 3,
+        # An-Nisa
+        "nisa": 4, "nisa": 4, "an nisa": 4, "women": 4,
+        # Al-Ma'idah
+        "maidah": 5, "al maidah": 5, "maida": 5, "table": 5,
+        # Al-An'am
+        "anam": 6, "al anam": 6, "cattle": 6,
+        # Al-A'raf
+        "araf": 7, "al araf": 7, "aaraf": 7, "al aaraf": 7,
+        "al-araf": 7, "a'raf": 7, "heights": 7,
+        # Al-Anfal
+        "anfal": 8, "al anfal": 8, "spoils": 8,
+        # At-Tawbah
+        "tawbah": 9, "tawba": 9, "at tawbah": 9, "repentance": 9,
+        # Yunus
+        "yunus": 10, "jonah": 10,
+        # Hud
+        "hud": 11,
+        # Yusuf
+        "yusuf": 12, "joseph": 12,
+        # Al-Kahf
+        "kahf": 18, "al kahf": 18, "al-kahf": 18, "cave": 18,
+        # Maryam
+        "maryam": 19, "mary": 19,
+        # Ta-Ha
+        "taha": 20, "ta ha": 20,
+        # Ya-Sin
+        "yasin": 36, "ya sin": 36, "yaseen": 36,
+        # Ar-Rahman
+        "rahman": 55, "ar rahman": 55, "the merciful": 55,
+        # Al-Waqi'ah
+        "waqiah": 56, "al waqiah": 56, "event": 56,
+        # Al-Mulk
+        "mulk": 67, "al mulk": 67, "sovereignty": 67,
+        # Al-Ikhlas
+        "ikhlas": 112, "al ikhlas": 112, "al-ikhlas": 112, "sincerity": 112,
+        "purity": 112,
+        # Al-Falaq
+        "falaq": 113, "al falaq": 113, "daybreak": 113,
+        # An-Nas
+        "nas": 114, "an nas": 114, "mankind": 114,
+        # Nuh
+        "nuh": 71, "noah": 71,
+        # Al-Jinn
+        "jinn": 72, "al jinn": 72,
+        # Al-Qiyamah
+        "qiyamah": 75, "resurrection": 75,
+        # Al-Insan
+        "insan": 76, "human": 76,
+        # Al-Fajr
+        "fajr": 89, "dawn": 89,
+        # Al-Alaq
+        "alaq": 96, "clot": 96,
+        # Al-Qadr
+        "qadr": 97, "power": 97, "decree": 97,
+        # Az-Zalzalah
+        "zalzalah": 99, "earthquake": 99,
+        # Al-Asr
+        "asr": 103, "time": 103,
+        # Al-Kawthar
+        "kawthar": 108, "abundance": 108,
+        # Al-Kafirun
+        "kafirun": 109, "disbelievers": 109,
+        # An-Nasr
+        "nasr": 110, "help": 110,
+    }
+    aliases.update(extra)
+    return aliases
+
+# Built once at module load — O(1) per alias lookup thereafter
+SURAH_ALIASES: dict = _build_surah_aliases()
+
+# Special verse shortcuts
+SPECIAL_VERSES: dict = {
+    "ayat al kursi": (2, 255),
+    "ayat al-kursi": (2, 255),
+    "ayatul kursi": (2, 255),
+    "ayat ul kursi": (2, 255),
+    "throne verse": (2, 255),
+    "ayat kursi": (2, 255),
+}
+
+
+def match_surah_alias(text: str):
+    """
+    Scan *text* for any known surah alias.
+    Returns surah_number (int) if found, else None.
+    Longest match wins to avoid short aliases shadowing longer ones.
+    """
+    t = text.lower()
+    # Remove punctuation that would block matching
+    import re as _re
+    t_clean = _re.sub(r"['’‘]", "", t)
+
+    # Check special verse shortcuts first
+    for key, val in SPECIAL_VERSES.items():
+        if key in t_clean or key in t:
+            return val  # returns tuple (surah, ayah)
+
+    best_len = 0
+    best_num = None
+    for alias, num in SURAH_ALIASES.items():
+        # Try as substring
+        if alias in t_clean or alias in t:
+            if len(alias) > best_len:
+                best_len = len(alias)
+                best_num = num
+    return best_num
+
 STOP_WORDS = {"what", "does", "the", "quran", "say", "about", "islam", "islamic",
               "how", "why", "tell", "me", "is", "are", "in", "of", "a", "an",
               "and", "to", "for", "it", "this", "that", "can", "do", "please",
@@ -116,14 +263,21 @@ def is_followup(text, session):
     if not session.get("last_query"):
         return False
     t = text.lower().strip()
+    words = t.split()
     for pattern in FOLLOWUP_PATTERNS:
         if re.search(pattern, t, re.IGNORECASE):
             return True
     # Short messages with pronouns
-    if len(t.split()) <= 6:
+    if len(words) <= 6:
         pronouns = {"that", "this", "it", "those", "these", "the same"}
-        if any(p in t.split() for p in pronouns):
+        if any(p in words for p in pronouns):
             return True
+    # Fix 4a: short message in an established thematic thread
+    # (catches "tell me about X", "what about Y", "the abu hurayra incident" etc.)
+    if (len(words) <= 8
+            and session.get("history")
+            and session.get("last_topics")):
+        return True
     return False
 
 
@@ -185,6 +339,36 @@ def lookup_verse(surah, ayah):
         "translator": a["translator"],
         "tafsir": english_tafsir,
     }
+
+
+def lookup_surah_tafsir(surah_number: int, max_ayat: int = 7) -> dict:
+    """Pull tafsir_entries for the first max_ayat ayat of surah_number.
+    Returns a dict compatible with the existing context-block format."""
+    ayat_rows = supabase_get("ayat", {
+        "surah_number": f"eq.{surah_number}",
+        "select": "id,surah_number,ayah_number,arabic_text,english_translation",
+        "order": "ayah_number",
+        "limit": str(max_ayat),
+    })
+    out = []
+    for a in ayat_rows:
+        tafsir = supabase_get("tafsir_entries", {
+            "ayah_id": f"eq.{a['id']}",
+            "select": "scholar_name,source_work,english_text,output_tier",
+            "order": "scholar_name",
+        })
+        # Filter untranslated Arabic-only placeholders
+        tafsir = [t for t in tafsir
+                  if not (t.get("english_text") or "").startswith("[Arabic tafsir")]
+        out.append({
+            "surah": a["surah_number"],
+            "ayah": a["ayah_number"],
+            "surah_name": SURAH_NAMES.get(a["surah_number"], f"Surah {a['surah_number']}"),
+            "arabic": a["arabic_text"],
+            "translation": a["english_translation"],
+            "tafsir": tafsir,
+        })
+    return {"surah_number": surah_number, "ayat": out}
 
 
 def search_quran(keywords, limit=5):
@@ -459,12 +643,31 @@ def gather_context(question):
 
     # --- 1. Direct lookups (highest priority, always run) ---
 
-    # Verse reference (e.g., "2:255")
-    verse_match = re.search(r'(\d{1,3}):(\d{1,3})', question)
+    # Fix 2 — verse-range regex: catches "2:255", "7:117-120", "7:117 – 120"
+    verse_match = re.search(r'(\d{1,3}):(\d{1,3})(?:\s*[-–—]\s*(\d{1,3}))?', question)
     if verse_match:
-        surah, ayah = int(verse_match.group(1)), int(verse_match.group(2))
-        data = lookup_verse(surah, ayah)
-        context_parts.append(f"VERSE LOOKUP {surah}:{ayah}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
+        surah = int(verse_match.group(1))
+        ayah_start = int(verse_match.group(2))
+        ayah_end = int(verse_match.group(3)) if verse_match.group(3) else None
+
+        if ayah_end is not None and ayah_end > ayah_start:
+            # Range — cap at 8 ayat to prevent context explosion
+            range_ayat = list(range(ayah_start, ayah_end + 1))
+            if len(range_ayat) > 8:
+                cap_note = f"(showing first 8 of {len(range_ayat)} ayat in range; ask for a specific ayah for full tafsir)"
+                range_ayat = range_ayat[:8]
+            else:
+                cap_note = ""
+            range_results = []
+            for n in range_ayat:
+                data = lookup_verse(surah, n)
+                range_results.append(data)
+            block = f"VERSE RANGE LOOKUP {surah}:{ayah_start}-{ayah_end}{' ' + cap_note if cap_note else ''}:\n{json.dumps(range_results, ensure_ascii=False, indent=2)}"
+            context_parts.append(block)
+        else:
+            # Single verse (original behaviour)
+            data = lookup_verse(surah, ayah_start)
+            context_parts.append(f"VERSE LOOKUP {surah}:{ayah_start}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 
     # Hadith reference (e.g., "bukhari 1", "muslim 2345")
     hadith_match = re.search(r'(bukhari|muslim|abudawud|abu dawud|tirmidhi|nasai|ibnmajah|ibn majah)\s*(?:#?\s*)?(\d+)', q, re.IGNORECASE)
@@ -489,15 +692,49 @@ def gather_context(question):
                 data = count_mentions(name)
                 context_parts.append(f"COUNT for '{name}':\n{json.dumps(data, ensure_ascii=False)}")
 
-    # --- 3. Surah info ---
-    surah_match = re.search(r'surah\s+(\w+)', q, re.IGNORECASE)
-    if surah_match:
-        name = surah_match.group(1)
-        for num, sname in SURAH_NAMES.items():
-            if name.lower() in sname.lower():
-                data = get_surah_info(num)
-                context_parts.append(f"SURAH INFO:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
-                break
+    # --- 3. Surah info + Fix 1 (alias-based) + Fix 3 (tafsir-of-X intent) ---
+
+    # Fix 1: match_surah_alias runs BEFORE the legacy "surah \w+" regex
+    resolved_surah = None
+    resolved_via_special = False  # True when match_surah_alias returns a (surah, ayah) tuple
+
+    alias_result = match_surah_alias(question)
+    if isinstance(alias_result, tuple):
+        # Special verse shortcut (e.g., ayat al-kursi → (2, 255))
+        sv_surah, sv_ayah = alias_result
+        data = lookup_verse(sv_surah, sv_ayah)
+        context_parts.append(f"VERSE LOOKUP {sv_surah}:{sv_ayah} (special shortcut):\n{json.dumps(data, ensure_ascii=False, indent=2)}")
+        resolved_surah = sv_surah
+        resolved_via_special = True
+    elif isinstance(alias_result, int):
+        resolved_surah = alias_result
+
+    # Legacy "surah <name>" regex as fallback when alias didn't fire
+    if resolved_surah is None:
+        surah_match = re.search(r'surah\s+(\w+)', q, re.IGNORECASE)
+        if surah_match:
+            name = surah_match.group(1)
+            for num, sname in SURAH_NAMES.items():
+                if name.lower() in sname.lower():
+                    resolved_surah = num
+                    break
+
+    if resolved_surah is not None and not resolved_via_special:
+        # Fix 3: tafsir-of-X intent — when query expresses tafsir/commentary intent
+        tafsir_intent = bool(re.search(
+            r'\b(tafsir|tafseer|commentary|explanation|explain|meaning)\b', q, re.IGNORECASE
+        ))
+        if tafsir_intent:
+            surah_name = SURAH_NAMES.get(resolved_surah, f"Surah {resolved_surah}")
+            data = lookup_surah_tafsir(resolved_surah, max_ayat=7)
+            context_parts.append(
+                f"FULL SURAH TAFSIR for {surah_name} (Surah {resolved_surah}):\n"
+                + json.dumps(data, ensure_ascii=False, indent=2)
+            )
+        else:
+            # Fallback to plain surah info (original behaviour)
+            data = get_surah_info(resolved_surah)
+            context_parts.append(f"SURAH INFO:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 
     # --- 4. Topic search ---
     topics = ["patience", "gratitude", "mercy", "worship", "guidance", "tawakkul",
@@ -571,7 +808,12 @@ def ask_claude(question, context, history=None):
         history_block = (
             "\nPREVIOUS CONVERSATION:\n"
             + "\n".join(turns)
-            + "\n\n(The user's current question may reference topics from above.)\n"
+            + "\n\nPRIOR CONVERSATION GUIDANCE:\n"
+            "If recent turns establish a clear thematic thread, INFER the user's intent from\n"
+            "that thread BEFORE asking for clarification. Only ask for clarification when\n"
+            "multiple equally-plausible candidates exist with no thematic preference.\n"
+            "For short or ambiguous follow-up questions, treat the immediately preceding\n"
+            "turn(s) as the primary disambiguation source.\n"
         )
 
     prompt = f"""You are Mizan (Al-Bayan), an Islamic knowledge assistant. A user asked:
@@ -812,19 +1054,47 @@ def main():
                     print("  Follow-up detected, reusing context...")
                     context = session["last_context"]
 
+                    # Fix 4b: expand keywords to include last_topics when the
+                    # follow-up introduces new entities not in last_topics
+                    import re as _re2
+                    current_words = [w for w in _re2.findall(r'\w+', text.lower())
+                                     if w not in STOP_WORDS and len(w) > 2]
+                    new_entities = [w for w in current_words
+                                    if w not in (session.get("last_topics") or [])]
+                    combined_keywords = (current_words[:3] + (session.get("last_topics") or [])[:3])
+
                     # Check if they want additional data on top
                     q_lower = text.lower()
                     if any(w in q_lower for w in ("hadith", "sunnah", "narrated")):
-                        if session["last_topics"]:
-                            extra = search_hadith_fts(session["last_topics"][:3], limit=5)
+                        search_kw = combined_keywords if combined_keywords else (session.get("last_topics") or [])[:3]
+                        if search_kw:
+                            extra = search_hadith_fts(search_kw, limit=5)
                             if extra["results"]:
                                 context += f"\n\n---\n\nADDITIONAL HADITH SEARCH:\n{json.dumps(extra, ensure_ascii=False, indent=2)}"
                     elif any(w in q_lower for w in ("verse", "ayah", "quran")):
-                        if session["last_topics"]:
-                            fts_q = " OR ".join(session["last_topics"][:4])
+                        search_kw = combined_keywords if combined_keywords else (session.get("last_topics") or [])[:4]
+                        if search_kw:
+                            fts_q = " OR ".join(search_kw[:4])
                             extra = search_quran(fts_q, limit=5)
                             if extra["results"]:
                                 context += f"\n\n---\n\nADDITIONAL QURAN SEARCH:\n{json.dumps(extra, ensure_ascii=False, indent=2)}"
+                    elif new_entities and session.get("last_topics"):
+                        # New entities in the followup → run a supplementary FTS
+                        # to bring thematic context for those new terms
+                        fts_q = " OR ".join(combined_keywords[:4])
+                        extra = search_tafsir(fts_q, limit=3)
+                        if extra["results"]:
+                            entries = []
+                            for hit in extra["results"]:
+                                entries.append(
+                                    f"Surah {hit['surah']} : Ayah {hit['ayah']}\n"
+                                    f"Scholar: {hit['scholar']} ({hit['source']})\n"
+                                    f"Passage: {hit['english_text']}"
+                                )
+                            context += (
+                                "\n\n---\n\nSUPPLEMENTARY TAFSIR (combined current+prior topics):\n"
+                                + "\n\n".join(entries)
+                            )
                 else:
                     print("  Gathering context...")
                     context = gather_context(text)
