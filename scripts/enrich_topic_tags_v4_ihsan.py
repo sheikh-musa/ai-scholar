@@ -227,29 +227,72 @@ Output rules:
 Output the JSON array now:"""
 
 
-def call_claude(prompt, timeout=45):
-    result = subprocess.run(
-        [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
-        capture_output=True, text=True, timeout=timeout, env=CLAUDE_ENV,
-    )
-    if result.returncode != 0:
-        return None, f"returncode={result.returncode}: {result.stderr[:200]}"
-    output = result.stdout.strip()
-    try:
-        tags = json.loads(output)
-        if isinstance(tags, list):
-            return [str(t).lower() for t in tags[:15]], None
-    except json.JSONDecodeError:
-        pass
-    m = re.search(r"\[.*?\]", output, re.DOTALL)
-    if m:
+_THROTTLE_MARKERS = (
+    "rate limit", "rate_limit", "ratelimit",
+    "too many requests", "429",
+    "usage limit", "usage_limit",
+    "throttl",
+    "quota", "exceeded",
+)
+
+
+def _is_throttle_error(stderr_text: str) -> bool:
+    """Detect Max-plan throttle / rate-limit errors in claude CLI stderr.
+    Per CAI-PROCESS-MAX-FIRST-001 §4: Max plan rate limits are aggregate
+    across CC + Claude Desktop + claude.ai; background CLI competes with
+    operator's interactive session. On throttle, back off rather than mark
+    failed (which is what the original v4 ship did — defect)."""
+    s = (stderr_text or "").lower()
+    return any(m in s for m in _THROTTLE_MARKERS)
+
+
+def call_claude(prompt, timeout=90, max_throttle_retries=4):
+    """Call claude -p with throttle-aware exponential backoff.
+
+    On non-throttle errors (JSON parse, returncode for non-rate-limit reasons,
+    timeout): return (None, err) immediately — no retry. These are content
+    issues that retrying won't fix.
+
+    On throttle errors: sleep with exponential backoff (60s, 120s, 240s, 480s)
+    up to max_throttle_retries before giving up. The total max wait is ~15
+    minutes which is shorter than the 5-hour rolling window but bridges
+    most short throttle bursts."""
+    for attempt in range(max_throttle_retries + 1):
         try:
-            tags = json.loads(m.group())
+            result = subprocess.run(
+                [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
+                capture_output=True, text=True, timeout=timeout, env=CLAUDE_ENV,
+            )
+        except subprocess.TimeoutExpired:
+            return None, f"timeout after {timeout}s"
+
+        if result.returncode != 0:
+            err = f"returncode={result.returncode}: {result.stderr[:200]}"
+            if _is_throttle_error(result.stderr) and attempt < max_throttle_retries:
+                backoff = 60 * (2 ** attempt)
+                print(f"  [throttle detected, backing off {backoff}s — attempt {attempt + 1}/{max_throttle_retries}]")
+                time.sleep(backoff)
+                continue
+            return None, err
+
+        output = result.stdout.strip()
+        try:
+            tags = json.loads(output)
             if isinstance(tags, list):
                 return [str(t).lower() for t in tags[:15]], None
         except json.JSONDecodeError:
-            return None, "regex-extracted JSON parse failed"
-    return None, "no JSON array in output"
+            pass
+        m = re.search(r"\[.*?\]", output, re.DOTALL)
+        if m:
+            try:
+                tags = json.loads(m.group())
+                if isinstance(tags, list):
+                    return [str(t).lower() for t in tags[:15]], None
+            except json.JSONDecodeError:
+                return None, "regex-extracted JSON parse failed"
+        return None, "no JSON array in output"
+
+    return None, f"throttle backoff exhausted after {max_throttle_retries} retries"
 
 
 # ---------------------------------------------------------------------------
