@@ -1471,15 +1471,18 @@ def main():
                 # Scholar gate — fires on ruling-class queries (halal/haram/fatwa)
                 # but NOT on fiqh-topic queries (wudu/salah/etc.). Topic queries
                 # route through juridical_translations retrieval downstream.
+                # Gate message is source-agnostic per operator direction — don't
+                # leak corpus contents to users; attribution is handled by
+                # downstream quoted-passage rendering.
                 if match_ruling_query(text):
                     send_message(chat_id,
                         "⚠️ *Scholar Gate*\n\n"
                         "This question involves a fiqh ruling that requires qualified scholarly judgment. "
-                        "I can share relevant Quranic verses, hadith, and Shafi'i matn passages (Safīnat al-Najā) "
+                        "I can share relevant Quranic verses, hadith narrations, and authoritative scholarly references "
                         "for context, but I cannot issue rulings.\n\n"
                         "Please consult a qualified scholar (mufti) for a definitive answer.\n\n"
-                        "_If you'd like, rephrase your question to explore the topic — e.g., "
-                        "'what does Safīnat say about X' rather than 'is X halal'._"
+                        "_If you'd like, rephrase as a topic question — e.g., 'what is the position on X' "
+                        "rather than 'is X halal'._"
                     )
                     print("  -> Scholar gate triggered (ruling-class query)")
                     continue
