@@ -4,6 +4,19 @@
 
 ---
 
+## OPTION (ii) LITE — hajj deferred to Phase 2 per operator 2026-05-07
+
+Sourcing exhausted: usul.ai Arabic covers original matn + Nawawi al-Jawi siyam additions
+(4 of 5 worship topics: taharah / salah / zakah / siyam). Ba'atiyyah's hajj addition is NOT
+in the usul.ai source. Al-Marbuqi PDF Arabic side is glyph-encoded (broken Unicode mapping;
+verified via both pypdf and pymupdf surveys).
+
+Operator (Musa) ratified 2026-05-07: ingest 4 of 5 buckets for v0; defer hajj to Phase 2.
+Phase 2 hajj sourcing tracked in strategic_decisions id 699 amendment 4 body. Likely
+pairs with INV-7 paired-scholar program activation.
+
+---
+
 ## PATH B REFINED — schema correction per CAI-RESP-136
 
 **CAI ruling:** CAI-RESP-136 / strategic_decisions id 756.
@@ -28,7 +41,15 @@ Translations are derivative renderings on a separate provenance chain (`juridica
 
 **Goal:** Ingest the operator-supplied bilingual Safīnat al-Najā translation by ʿAbdullah Muḥammad al-Marbūqī al-Shāfiʿī into `juridical_texts` (Arabic matn) + `juridical_translations` (English translation) substrate, then wire `mizan_bot.py` retrieval to surface fiqh-class queries against it as retrieve-only echo (no compose-layer synthesis per AL-BAYAN-COMPOSE-001 C4 + INV-7 paired-scholar gate).
 
-**Architecture:** PDF parser extracts chapter-aligned passages from `docs/sources/safinat-al-najah-marbuqi-tr.pdf` (185 pages, bilingual Arabic+English). Each chapter becomes one `juridical_texts` row (Arabic matn) and one `juridical_translations` row (English, FK'd to the texts row). Migration `20260507_001_juridical_translations.sql` adds the `juridical_translations` table (the parent `juridical_texts` table is ALREADY DEPLOYED as `20260428194802_al_bayan_003_juridical_corpus.sql`). Single `ingestion_provenance` row records the SHA-pinned PDF + sadaqah-jariyah license declaration (shared across both row types via `ingestion_provenance_id`). `mizan_bot.py` adds a `match_fiqh_query()` routing path that consults `juridical_translations` when query mentions Shafi'i / fiqh / madhhab keywords, returns matn passages with attribution, never composes new rulings.
+**Architecture (option (ii) lite):** Two distinct sources:
+- Arabic matn read from `docs/sources/safinat-al-najah-arabic.txt` (usul.ai / al-Maktaba al-Shamela; 24,906 chars; 65 (فصل) fasls). NOT from PDF (PDF Arabic side is glyph-encoded). Fasls are classified into 5 topical buckets by Arabic keyword matching; all 65 fasls assigned to buckets (0 unmatched).
+- English translation read from `docs/sources/safinat-al-najah-marbuqi-tr.pdf` (185 pages; al-Marbuqi 2009). 8 PDF chapters segmented; chapters are merged into matching buckets.
+
+**5 topical buckets** (hajj excluded): Muqaddimah & Iman (4 fasls), Taharah (21 fasls), Salah (32 fasls), Zakah (1 fasl), Siyam (7 fasls).
+
+**TWO ingestion_provenance rows**: Arabic (usul.ai, PD) + English (al-Marbuqi PDF, sadaqah jariyah). Each row carries its own `ingestion_provenance_id`. `juridical_texts` rows carry the Arabic provenance id; `juridical_translations` rows carry the English provenance id.
+
+Migration `20260507_001_juridical_translations.sql` adds the `juridical_translations` table (the parent `juridical_texts` table is ALREADY DEPLOYED as `20260428194802_al_bayan_003_juridical_corpus.sql`). `mizan_bot.py` adds a `match_fiqh_query()` routing path that consults `juridical_translations` when query mentions Shafi'i / fiqh / madhhab keywords, returns matn passages with attribution, never composes new rulings.
 
 **Tech Stack:** Python 3, pypdf (in temp venv at `/tmp/pdfvenv`), Supabase REST (service-role for inserts), `mizan_bot.py` extension.
 
@@ -48,10 +69,11 @@ Translations are derivative renderings on a separate provenance chain (`juridica
 
 | File | Change | Status |
 |------|--------|--------|
-| `docs/sources/safinat-al-najah-marbuqi-tr.pdf` | Already present | Operator-supplied source, SHA `679404ac…ad491`. Committed for audit pinning |
+| `docs/sources/safinat-al-najah-arabic.txt` | Already present | Arabic source — usul.ai / al-Maktaba al-Shamela; SHA `18a3bb24…9c`. 24,906 chars; 65 (فصل) fasls; original matn + Nawawi al-Jawi siyam additions; no hajj |
+| `docs/sources/safinat-al-najah-marbuqi-tr.pdf` | Already present | English source — al-Marbuqi 2009, al-inaam.com; SHA `679404ac…ad491`. 185 pages; 8 chapters extracted; Arabic side glyph-encoded (NOT used for Arabic ingestion) |
 | `supabase/migrations/20260429_001_juridical_corpus.sql` | DELETED (commit `360f9cc`) | Was never applied to remote; declared wrong schema. Shadow file removed per CAI-RESP-136 downstream ask 1 |
 | `supabase/migrations/20260507_001_juridical_translations.sql` | NEW (commit `7ebc7b2`) | Adds `juridical_translations` table FK'd to `juridical_texts`. **Do NOT apply until 2026-05-08T01:32:09Z window-close or Musa early-close consent** |
-| `scripts/ingest_safinat_marbuqi.py` | REWRITTEN for two-step insert (commit `6f7ded6`) | cmd_ingest: Step 1 inserts Arabic into `juridical_texts`; Step 2 inserts English into `juridical_translations`. verify_schema() gate guards both cmd_provenance + cmd_ingest |
+| `scripts/ingest_safinat_marbuqi.py` | REWRITTEN for option (ii) lite | Arabic from `safinat-al-najah-arabic.txt` (NOT PDF); English from PDF; 5 topical buckets + bucket keyword assignment; TWO ingestion_provenance rows; verify_schema() gate guards cmd_provenance + cmd_ingest |
 | `scripts/mizan_bot.py` | Modify | Add `match_fiqh_query()` routing helper + `lookup_fiqh()` retrieval against `juridical_translations`; wire into `gather_context()` after the existing surah-alias / hadith-alias detection |
 | `docs/SAFINAT_INGESTION_RUNBOOK.md` | Create | Operator runbook: migration apply step, post-ingest smoke tests, recovery procedure |
 
@@ -127,44 +149,48 @@ tuning before `ingest` runs.
 **Files:**
 - Modify (run only): the existing script — requires migration from Task 1 to be applied first.
 
-**Insert pattern:** cmd_provenance + cmd_ingest both call verify_schema() first. If
-`juridical_translations` is not yet deployed, both commands exit with code 5.
+**Insert pattern (option (ii) lite):** Two ingestion_provenance rows (Arabic + English). cmd_provenance writes both. cmd_ingest reads both ids. Per-bucket two-step insert: Step 1 → `juridical_texts` (Arabic blob from fasls); Step 2 → `juridical_translations` (English from PDF chapters). Both call verify_schema() first; exit code 5 if `juridical_translations` not deployed.
 
-- [ ] **Step 1: Write provenance row**
+- [ ] **Step 1: Write BOTH provenance rows**
 
 ```bash
 python3 scripts/ingest_safinat_marbuqi.py provenance
 ```
-Expected: "Schema verified: juridical_texts + juridical_translations both present." then
-"Wrote ingestion_provenance row: id=<uuid>". Idempotent — re-running gives "already present".
+Expected:
+```
+Schema verified: juridical_texts + juridical_translations + ingestion_provenance all present.
+  Arabic (usul.ai) provenance row written: id=<uuid>
+  English (al-Marbuqi PDF) provenance row written: id=<uuid>
+Provenance rows: arabic=<uuid>, english=<uuid>
+```
+Idempotent — re-running gives "already present" for each.
 
-- [ ] **Step 2: Write content rows (two-step insert per chapter)**
+- [ ] **Step 2: Write content rows (two-step insert per bucket)**
 
 ```bash
 python3 scripts/ingest_safinat_marbuqi.py ingest
 ```
-Expected per chapter:
+Expected per bucket:
 ```
-  + <chapter_path>       (pages X-Y,  NNN ar / MMMM en chars)
+  + <bucket_name>             (N fasls, NNN ar chars, MMMM en chars, pages X-Y)
 ```
-And a final summary:
+Expected 5 buckets written (Muqaddimah & Iman, Taharah, Salah, Zakah, Siyam):
 ```
-Done: N chapters written, 0 already present, K skipped (insufficient Arabic extraction).
+Done: 5 bucket(s) written, 0 already present.
+NOTE: Hajj DEFERRED to Phase 2 per operator decision 2026-05-07.
 ```
-Chapters with <50 Arabic chars are SKIPPED — note which chapters are flagged and plan Phase 2
-Arabic refresh from al-Maktaba al-Shamela.
 
-Each written chapter produces:
-- 1 row in `juridical_texts` (Arabic matn + metadata)
-- 1 row in `juridical_translations` (English FK'd to juridical_texts.id)
+Each written bucket produces:
+- 1 row in `juridical_texts` (Arabic matn blob from all fasls in bucket; author per bucket config)
+- 1 row in `juridical_translations` (English from matching PDF chapters, FK to juridical_texts.id)
 
 - [ ] **Step 3: Verify — JOIN both tables**
 
 ```bash
 python3 scripts/ingest_safinat_marbuqi.py verify
 ```
-Expected: lists all `juridical_translations` rows for translator ʿAbdullah Muḥammad al-Marbūqī,
-joined with `juridical_texts.baab_or_section`, confirming both table sides populated.
+Expected: 5 rows in `juridical_translations`, each with `baab_or_section` (bucket name),
+`ar=N chars`, tier=paraphrased, pp range. Joined with `juridical_texts.arabic_text` char count.
 
 - [ ] **Step 4: No commit needed** — Task 3 is data-write only, no code changes.
 
