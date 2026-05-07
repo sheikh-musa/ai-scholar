@@ -131,80 +131,51 @@ def match_fiqh_query(text: str) -> bool:
 
 
 FIQH_TERM_EXPANSIONS = {
-    # transliterated Arabic → English equivalents found in al-Marbuqi translation.
-    # The al-Marbuqi tr. uses English worship terms; literal user keywords like
-    # "wudu" or "arkan" miss without expansion. ILIKE searches use BOTH the
-    # original transliteration AND each English equivalent.
+    # Transliterated Arabic → English equivalents in al-Marbuqi text.
+    # PostgreSQL FTS handles English stemming, hyphens, suffixes, and stop-words
+    # natively — those entries are intentionally NOT here. This dict ONLY bridges
+    # cross-language vocabulary that FTS cannot stem (Arabic transliteration ↔
+    # English worship terms).
     #
-    # SINGLE-WORD EQUIVALENTS ONLY: spaces in PostgREST or=() ILIKE patterns
-    # break URL parsing without explicit percent-encoding. Multi-word phrases
-    # (e.g. "ritual bath", "obligatory acts") are split into their headword
-    # only ("bath", "obligatory"). Trade-off: lower precision; but matches
-    # are still surfaced via co-occurrence with other expanded terms.
+    # Phase 2 semantic embeddings (per EMBED_PIPELINE_v02) will retire even this
+    # mapping by understanding ablution ≈ wudu via vector similarity.
     "wudu":     ["ablution"],
     "wuduʾ":    ["ablution"],
-    "ghusl":    ["bath"],            # "ritual bath" headword
+    "ghusl":    ["bath"],
     "tayammum": ["tayammum"],
     "taharah":  ["purity", "purification"],
     "tahara":   ["purity", "purification"],
-    "najasah":  ["impurity", "filth"],
+    "najasah":  ["impurity"],
     "najis":    ["impurity"],
     "salah":    ["prayer"],
     "salat":    ["prayer"],
     "salaah":   ["prayer"],
-    "adhan":    ["adhan"],           # English text uses transliteration
-    "athan":    ["adhan"],
+    "adhan":    ["adhan"],
     "iqamah":   ["iqamah"],
-    "rukn":     ["pillar", "obligatory", "compulsory", "integrals"],
-    "arkan":    ["pillars", "obligatory", "compulsory", "integrals"],
-    "fard":     ["obligatory", "compulsory", "farḍ"],
-    "fardh":    ["obligatory", "compulsory"],
+    "rukn":     ["pillar", "obligatory"],
+    "arkan":    ["pillars", "obligatory"],
+    "fard":     ["obligatory"],
+    "fardh":    ["obligatory"],
     "janazah":  ["funeral"],
     "jumʿah":   ["friday", "jumuah"],
     "jumuah":   ["friday"],
     "zakah":    ["zakat", "alms"],
     "zakat":    ["alms"],
-    "saum":     ["fasting", "fast"],
-    "sawm":     ["fasting", "fast"],
+    "saum":     ["fasting"],
+    "sawm":     ["fasting"],
     "siyam":    ["fasting"],
-    "ramadan":  ["ramadan"],
-    "iftar":    ["iftar", "breaking"],
+    "iftar":    ["iftar"],
     "suhur":    ["suhur"],
     "kaffara":  ["expiation"],
     "kaffarah": ["expiation"],
-    # Action verbs the matn uses with verb-stem variation; map common user
-    # typings (nullifies/breaks/invalidates) to the verb stems present in the
-    # al-Marbuqi text plus the standard heading-noun "Factors That ...".
-    "nullify":      ["nullify", "factors", "invalidate"],
-    "nullifies":    ["nullify", "factors", "invalidate"],
-    "nullified":    ["nullify", "factors"],
-    "nullifying":   ["nullify", "factors"],
-    "invalidate":   ["nullify", "factors"],
-    "invalidates":  ["nullify", "factors"],
-    "invalidator":  ["nullify", "factors"],
-    "invalidators": ["nullify", "factors"],
-    "break":        ["break", "factors", "nullify"],
-    "breaks":       ["break", "factors", "nullify"],
-    "broken":       ["break", "factors", "nullify"],
-    "breaking":     ["break", "factors", "nullify"],
-    "mufsid":       ["nullify", "factors"],
-    "mufattir":     ["nullify", "factors"],
-    "mufsidat":     ["nullify", "factors"],
-    "mufattirat":   ["nullify", "factors"],
-    # Family / pregnancy / nursing concession terms — al-Marbuqi text uses
-    # hyphenated 'breast-feeding' and singular 'pregnant'. User typings
-    # without hyphen miss substring match; expand to hyphenated form.
-    "breastfeeding": ["breast-feed", "breast-feeding", "nursing", "lactating"],
-    "breastfeed":   ["breast-feed", "nursing"],
-    "nursing":      ["breast-feed", "nursing", "lactating"],
-    "lactating":    ["breast-feed", "lactating"],
-    "pregnant":     ["pregnant", "expectant"],
-    "pregnancy":    ["pregnant", "expectant"],
-    "expectant":    ["pregnant", "expectant"],
     "shafii":   ["shafi"],
     "shafi'i":  ["shafi"],
     "madhhab":  ["school"],
     "fiqh":     ["jurisprudence"],
+    "mufsid":   ["nullify"],
+    "mufattir": ["nullify"],
+    "mufsidat": ["nullify"],
+    "mufattirat": ["nullify"],
 }
 
 
@@ -225,64 +196,40 @@ def expand_fiqh_keywords(words: list) -> list:
 
 
 def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
-    """Query juridical_translations via PostgREST ILIKE.
+    """Query juridical_translations via Postgres FTS RPC (search_juridical_translations_fts).
 
-    Phase 2 would swap to a search_juridical_semantic RPC once embeddings
-    populate (per EMBED_PIPELINE_v02). v0 uses ILIKE on translation_text
-    for FTS-shape matching.
+    PostgreSQL English FTS handles stemming (nullifies → nullify), stop-words,
+    hyphens, suffix variation natively. ts_rank gives built-in relevance
+    scoring. Replaces the prior ILIKE+expansion treadmill.
 
-    Keyword expansion: al-Marbuqi tr. uses English terms (ablution, pillars,
-    prayer) not transliterated Arabic. expand_fiqh_keywords adds English
-    equivalents so user queries with "wudu" or "arkan" hit "ablution" / "pillars".
-
-    Density ranking: PostgREST 'or' returns rows in row order (no relevance
-    scoring). We over-fetch (all 5 buckets), score each by total keyword-hit
-    count in the full text, return top-N by score. Without this, "fasting
-    nullifiers" returns Muqaddimah/Taharah ahead of Siyam because they appear
-    earlier in row order and Siyam ranks below the limit cutoff.
+    FIQH_TERM_EXPANSIONS still applied BEFORE the FTS call to bridge
+    transliterated Arabic terms (wudu, arkan, etc.) to their English
+    equivalents in the al-Marbuqi corpus — FTS cannot stem across languages.
 
     Returns: {results: [{baab, translator, text, source_work, ...}]}
     """
-    # Pull the most-relevant rows by keyword presence in translation_text.
-    raw_words = [w for w in keywords_query.lower().split() if w not in STOP_WORDS and len(w) > 3]
+    raw_words = [w for w in keywords_query.lower().split() if w not in STOP_WORDS and len(w) > 2]
     if not raw_words:
         return {"results": []}
-    words = expand_fiqh_keywords(raw_words)
-    # PostgREST 'or' syntax for ILIKE OR — search up to 6 expanded terms.
-    # Fetch up to 10 rows (the full corpus has only 5 chapters anyway) so we
-    # can rank by density rather than rely on row-order cutoff.
-    fetch_limit = max(10, limit * 3)
-    or_clause = "or=(" + ",".join(f"translation_text.ilike.*{w}*" for w in words[:6]) + ")"
+    expanded = expand_fiqh_keywords(raw_words)
+    # Build a websearch_to_tsquery-compatible OR query from expanded terms.
+    # websearch_to_tsquery treats space-separated terms as AND by default; we
+    # want OR for broad fiqh-topic matching, so explicitly join with " OR ".
+    fts_query = " OR ".join(expanded[:8])
+
     try:
-        # Direct PostgREST GET; supabase_get already in this file but doesn't
-        # support 'or=' easily — build URL manually
-        path = (
-            "juridical_translations?select=translation_text,page_start,page_end,"
-            "edition_label,translator_name,translation_source_work,output_tier,"
-            "juridical_text_id&"
-            + or_clause + f"&limit={fetch_limit}"
-        )
-        rows = supabase_get(path)
-        # Density rank: count occurrences of USER'S LITERAL terms (raw_words)
-        # in the row's full text. Counting expansions causes drift — Salah's
-        # incidental "factors that nullify wudu/salah" content beats Siyam's
-        # actual fasting-nullifier section because expansions trigger across
-        # all chapters. Restricting to user's typed terms keeps ranking honest.
-        def _density(row):
-            full = (row.get("translation_text") or "").lower()
-            return sum(full.count(w.lower()) for w in raw_words)
-        rows.sort(key=_density, reverse=True)
-        rows = rows[:limit]
+        rows = supabase_rpc("search_juridical_translations_fts", {
+            "query": fts_query,
+            "lim": limit,
+        })
     except Exception:
         return {"results": []}
+    if not rows:
+        return {"results": []}
 
-    # For each translation hit, fetch the linked juridical_texts row to get
-    # baab_or_section + arabic_text snippet for fuller attribution.
-    # Snippet extraction: find first occurrence of any expanded keyword in the
-    # full translation_text and return a window around it (500 chars before,
-    # 1500 chars after). Without this, the first 1500 chars of the chapter is
-    # almost always the chapter heading + first section, not the section the
-    # user actually asked about.
+    # For each translation hit, fetch baab_or_section from juridical_texts
+    # for fuller attribution. Snippet still extracted via _extract_keyword_snippet
+    # (anchors on first keyword occurrence past the chapter heading zone).
     results = []
     for r in rows:
         baab = "?"
@@ -295,7 +242,7 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
         except Exception:
             pass
         full_text = r.get("translation_text") or ""
-        snippet = _extract_keyword_snippet(full_text, words, before=500, after=1500)
+        snippet = _extract_keyword_snippet(full_text, expanded, before=500, after=1500)
         results.append({
             "baab": baab,
             "translator": r.get("translator_name", "?"),
@@ -303,6 +250,7 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
             "edition": r.get("edition_label", ""),
             "text": snippet,
             "tier": r.get("output_tier", "paraphrased"),
+            "rank": r.get("rank", 0.0),
         })
     return {"results": results}
 
