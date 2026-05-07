@@ -96,14 +96,21 @@ FIQH_TOPIC_KEYWORDS = {
     "ghusl", "tayammum", "ritual bath",
     "purity", "taharah", "tahara",
     "najasah", "najis", "impurity",
-    "salah", "salat", "salaah",
+    "salah", "salat", "salaah", "prayer",
     "adhan", "athan", "iqamah",
-    "rukn", "arkan",
+    "rukn", "arkan", "pillar", "pillars",
     "janazah", "funeral",
     "jumʿah", "jumuah",
-    "zakah", "zakat",
-    "saum", "sawm", "siyam", "fasting", "ramadan",
+    "zakah", "zakat", "alms",
+    "saum", "sawm", "siyam", "fasting", "fast", "fasts", "fasted",
+    "ramadan", "ramadhan", "ramaḍān",
     "iftar", "suhur", "kaffara", "kaffarah",
+    # Common verb forms users type in queries (FTS handles stemming
+    # downstream; this just opens the gate). Matched word-boundary
+    # to avoid 'fast' substring-matching 'breakfast' / 'steadfast'.
+    "nullify", "nullifies", "nullified",
+    "invalidate", "invalidates",
+    "break", "breaks", "breaking",
     # NOT yet covered (hajj deferred to Phase 2). Add here when ingestion lands:
     # "hajj", "umrah", "ihram", "miqat", "tawaf"
 }
@@ -125,9 +132,17 @@ def match_fiqh_query(text: str) -> bool:
     """Detect Shafi'i fiqh-topic keywords in query → trigger juridical_translations
     retrieval. Topic-class queries (about wudu, salah, etc.) bypass the scholar gate
     and surface matn passages for reference. Hajj keywords NOT in set (deferred
-    to Phase 2 ingestion)."""
+    to Phase 2 ingestion).
+
+    Word-boundary match (not substring) — prevents short keywords like 'fast'
+    from triggering on 'breakfast' / 'steadfast' / 'fastest'.
+    """
+    import re
     t = text.lower()
-    return any(kw in t for kw in FIQH_TOPIC_KEYWORDS)
+    for kw in FIQH_TOPIC_KEYWORDS:
+        if re.search(r'\b' + re.escape(kw.lower()) + r'\b', t):
+            return True
+    return False
 
 
 FIQH_TERM_EXPANSIONS = {
