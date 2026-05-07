@@ -1488,81 +1488,99 @@ def main():
                     print("  -> Scholar gate triggered (ruling-class query)")
                     continue
 
-                # Process question
-                send_typing(chat_id)
+                # Process question — wrap in try/except so any unexpected error
+                # (NameError in prompt-build, network blip, JSON parse, etc.) is
+                # surfaced as a polite user-facing message rather than leaving
+                # the user hanging while the outer polling loop just retries.
+                try:
+                    send_typing(chat_id)
 
-                # Detect follow-up
-                followup = is_followup(text, session)
+                    # Detect follow-up
+                    followup = is_followup(text, session)
 
-                if followup and session["last_context"]:
-                    print("  Follow-up detected, reusing context...")
-                    context = session["last_context"]
+                    if followup and session["last_context"]:
+                        print("  Follow-up detected, reusing context...")
+                        context = session["last_context"]
 
-                    # Fix 4b: expand keywords to include last_topics when the
-                    # follow-up introduces new entities not in last_topics
-                    import re as _re2
-                    current_words = [w for w in _re2.findall(r'\w+', text.lower())
-                                     if w not in STOP_WORDS and len(w) > 2]
-                    new_entities = [w for w in current_words
-                                    if w not in (session.get("last_topics") or [])]
-                    combined_keywords = (current_words[:3] + (session.get("last_topics") or [])[:3])
+                        # Fix 4b: expand keywords to include last_topics when the
+                        # follow-up introduces new entities not in last_topics
+                        import re as _re2
+                        current_words = [w for w in _re2.findall(r'\w+', text.lower())
+                                         if w not in STOP_WORDS and len(w) > 2]
+                        new_entities = [w for w in current_words
+                                        if w not in (session.get("last_topics") or [])]
+                        combined_keywords = (current_words[:3] + (session.get("last_topics") or [])[:3])
 
-                    # Check if they want additional data on top
-                    q_lower = text.lower()
-                    if any(w in q_lower for w in ("hadith", "sunnah", "narrated")):
-                        search_kw = combined_keywords if combined_keywords else (session.get("last_topics") or [])[:3]
-                        if search_kw:
-                            extra = search_hadith_fts(search_kw, limit=5)
+                        # Check if they want additional data on top
+                        q_lower = text.lower()
+                        if any(w in q_lower for w in ("hadith", "sunnah", "narrated")):
+                            search_kw = combined_keywords if combined_keywords else (session.get("last_topics") or [])[:3]
+                            if search_kw:
+                                extra = search_hadith_fts(search_kw, limit=5)
+                                if extra["results"]:
+                                    context += f"\n\n---\n\nADDITIONAL HADITH SEARCH:\n{json.dumps(extra, ensure_ascii=False, indent=2)}"
+                        elif any(w in q_lower for w in ("verse", "ayah", "quran")):
+                            search_kw = combined_keywords if combined_keywords else (session.get("last_topics") or [])[:4]
+                            if search_kw:
+                                fts_q = " OR ".join(search_kw[:4])
+                                extra = search_quran(fts_q, limit=5)
+                                if extra["results"]:
+                                    context += f"\n\n---\n\nADDITIONAL QURAN SEARCH:\n{json.dumps(extra, ensure_ascii=False, indent=2)}"
+                        elif new_entities and session.get("last_topics"):
+                            # New entities in the followup → run a supplementary FTS
+                            # to bring thematic context for those new terms
+                            fts_q = " OR ".join(combined_keywords[:4])
+                            extra = search_tafsir(fts_q, limit=3)
                             if extra["results"]:
-                                context += f"\n\n---\n\nADDITIONAL HADITH SEARCH:\n{json.dumps(extra, ensure_ascii=False, indent=2)}"
-                    elif any(w in q_lower for w in ("verse", "ayah", "quran")):
-                        search_kw = combined_keywords if combined_keywords else (session.get("last_topics") or [])[:4]
-                        if search_kw:
-                            fts_q = " OR ".join(search_kw[:4])
-                            extra = search_quran(fts_q, limit=5)
-                            if extra["results"]:
-                                context += f"\n\n---\n\nADDITIONAL QURAN SEARCH:\n{json.dumps(extra, ensure_ascii=False, indent=2)}"
-                    elif new_entities and session.get("last_topics"):
-                        # New entities in the followup → run a supplementary FTS
-                        # to bring thematic context for those new terms
-                        fts_q = " OR ".join(combined_keywords[:4])
-                        extra = search_tafsir(fts_q, limit=3)
-                        if extra["results"]:
-                            entries = []
-                            for hit in extra["results"]:
-                                entries.append(
-                                    f"Surah {hit['surah']} : Ayah {hit['ayah']}\n"
-                                    f"Scholar: {hit['scholar']} ({hit['source']})\n"
-                                    f"Passage: {hit['english_text']}"
+                                entries = []
+                                for hit in extra["results"]:
+                                    entries.append(
+                                        f"Surah {hit['surah']} : Ayah {hit['ayah']}\n"
+                                        f"Scholar: {hit['scholar']} ({hit['source']})\n"
+                                        f"Passage: {hit['english_text']}"
+                                    )
+                                context += (
+                                    "\n\n---\n\nSUPPLEMENTARY TAFSIR (combined current+prior topics):\n"
+                                    + "\n\n".join(entries)
                                 )
-                            context += (
-                                "\n\n---\n\nSUPPLEMENTARY TAFSIR (combined current+prior topics):\n"
-                                + "\n\n".join(entries)
-                            )
-                else:
-                    print("  Gathering context...")
-                    context = gather_context(text)
+                    else:
+                        print("  Gathering context...")
+                        context = gather_context(text)
 
-                print("  Asking Claude...")
-                send_typing(chat_id)
-                answer = ask_claude(text, context, session["history"] if session["history"] else None)
+                    print("  Asking Claude...")
+                    send_typing(chat_id)
+                    answer = ask_claude(text, context, session["history"] if session["history"] else None)
 
-                # Update session
-                add_to_history(session, "user", text)
-                add_to_history(session, "assistant", answer)
-                session["last_query"] = text
-                session["last_context"] = context
-                import re as _re
-                session["last_topics"] = [w for w in _re.findall(r'\w+', text.lower())
-                                          if w not in STOP_WORDS and len(w) > 2]
+                    # Update session
+                    add_to_history(session, "user", text)
+                    add_to_history(session, "assistant", answer)
+                    session["last_query"] = text
+                    session["last_context"] = context
+                    import re as _re
+                    session["last_topics"] = [w for w in _re.findall(r'\w+', text.lower())
+                                              if w not in STOP_WORDS and len(w) > 2]
 
-                send_message(chat_id, answer)
-                print(f"  -> Response sent ({len(answer)} chars)")
-                print(f"  >> {answer[:300]}{'...' if len(answer) > 300 else ''}")
+                    send_message(chat_id, answer)
+                    print(f"  -> Response sent ({len(answer)} chars)")
+                    print(f"  >> {answer[:300]}{'...' if len(answer) > 300 else ''}")
 
-                # AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135 — persist after send,
-                # fail-soft so persistence outages don't block user replies.
-                persist_emission(chat_id, text, answer)
+                    # AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135 — persist after send,
+                    # fail-soft so persistence outages don't block user replies.
+                    persist_emission(chat_id, text, answer)
+                except Exception as msg_err:
+                    # Per-message exception handler — don't leave user hanging.
+                    err_short = type(msg_err).__name__
+                    print(f"  -> per-message error ({err_short}): {msg_err}")
+                    import traceback
+                    traceback.print_exc()
+                    try:
+                        send_message(chat_id,
+                            "⚠️ I hit a technical issue processing that question. "
+                            "The error has been logged for review. "
+                            "Please try rephrasing your question, or come back in a moment."
+                        )
+                    except Exception as send_err:
+                        print(f"  -> failed to send error notification: {send_err}")
 
         except urllib.error.URLError as e:
             print(f"Network error: {e}. Retrying in 5s...")
