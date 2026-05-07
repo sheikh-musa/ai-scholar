@@ -236,14 +236,22 @@ _THROTTLE_MARKERS = (
 )
 
 
-def _is_throttle_error(stderr_text: str) -> bool:
-    """Detect Max-plan throttle / rate-limit errors in claude CLI stderr.
-    Per CAI-PROCESS-MAX-FIRST-001 §4: Max plan rate limits are aggregate
-    across CC + Claude Desktop + claude.ai; background CLI competes with
-    operator's interactive session. On throttle, back off rather than mark
-    failed (which is what the original v4 ship did — defect)."""
-    s = (stderr_text or "").lower()
-    return any(m in s for m in _THROTTLE_MARKERS)
+def _is_throttle_error(stderr_text: str, returncode: int = 1) -> bool:
+    """Detect Max-plan throttle.
+
+    Two signals:
+      1) explicit keyword in stderr (rate limit / 429 / etc) — original
+      2) Claude CLI 2.1.x silent failure: returncode != 0 with stderr
+         length < 50 chars (observed in production: 2,350 silent rc=1
+         failures during Max throttle window, all with empty stderr).
+         Without this branch, throttle backoff never fires and the run
+         marks them as failed and skips."""
+    s = (stderr_text or "").strip().lower()
+    if any(m in s for m in _THROTTLE_MARKERS):
+        return True
+    if returncode != 0 and len(s) < 50:
+        return True
+    return False
 
 
 def call_claude(prompt, timeout=90, max_throttle_retries=4):
@@ -268,7 +276,7 @@ def call_claude(prompt, timeout=90, max_throttle_retries=4):
 
         if result.returncode != 0:
             err = f"returncode={result.returncode}: {result.stderr[:200]}"
-            if _is_throttle_error(result.stderr) and attempt < max_throttle_retries:
+            if _is_throttle_error(result.stderr, result.returncode) and attempt < max_throttle_retries:
                 backoff = 60 * (2 ** attempt)
                 print(f"  [throttle detected, backing off {backoff}s — attempt {attempt + 1}/{max_throttle_retries}]")
                 time.sleep(backoff)
@@ -423,7 +431,91 @@ def cmd_run(args):
     return 0
 
 
-SUBCOMMANDS = {"audit": cmd_audit, "run": cmd_run, "status": cmd_status, "sample": cmd_sample}
+def cmd_retry_failed(args):
+    """Re-run ayat that previously failed (live in scripts/.v4_log.jsonl).
+
+    Reads the fail log, deduplicates by ayah_id, fetches each row + tafsir,
+    re-runs through call_claude (now with strengthened throttle detector
+    and exponential backoff). On success: PATCH ayat.topic_tags, add to
+    checkpoint completed_ids, increment succeeded counter. On fail again:
+    re-log to a fresh log file scripts/.v4_retry_log.jsonl.
+
+    The original .v4_log.jsonl is moved to .v4_log.pre_retry.jsonl as
+    immutable audit history before the retry pass starts."""
+    log_path = Path(__file__).parent / ".v4_log.jsonl"
+    if not log_path.exists():
+        print("No fail log to retry."); return 0
+
+    # Move current fail log to pre_retry archive
+    archive_path = Path(__file__).parent / ".v4_log.pre_retry.jsonl"
+    log_path.rename(archive_path)
+    print(f"Moved {log_path.name} -> {archive_path.name} ({archive_path.stat().st_size} bytes)")
+
+    # Load failed ayah_ids (dedupe — keep order of first occurrence)
+    seen = set()
+    failed_entries = []
+    with archive_path.open() as f:
+        for line in f:
+            if not line.strip(): continue
+            e = json.loads(line)
+            aid = e["ayah_id"]
+            if aid in seen: continue
+            seen.add(aid)
+            failed_entries.append(e)
+    print(f"Retrying {len(failed_entries)} unique failed ayat")
+
+    cp = load_checkpoint()
+    completed = set(cp.get("completed_ids", []))
+    new_log_path = Path(__file__).parent / ".v4_retry_log.jsonl"
+
+    for i, e in enumerate(failed_entries):
+        aid = e["ayah_id"]
+        if aid in completed:
+            print(f"  [{i+1}/{len(failed_entries)}] {e.get('ref','?')} skip (already in completed_ids)")
+            continue
+        # Fetch the ayah + tafsir to rebuild the prompt
+        try:
+            ayah_rows = api_get(f"ayat?id=eq.{aid}&select=id,surah_number,ayah_number,english_translation,topic_tags&limit=1")
+            if not ayah_rows:
+                print(f"  [{i+1}/{len(failed_entries)}] {aid[:8]} ayah row missing")
+                continue
+            ayah = ayah_rows[0]
+            tafsir = api_get(f"tafsir_entries?ayah_id=eq.{aid}&select=scholar_name,english_text")
+        except Exception as fetch_err:
+            with new_log_path.open("a") as nf:
+                nf.write(json.dumps({"ayah_id": aid, "error": f"refetch: {fetch_err}", "retry_t": datetime.now(timezone.utc).isoformat()}) + "\n")
+            continue
+
+        prompt = build_prompt(ayah, tafsir)
+        tags, err = call_claude(prompt)
+        if tags is None or len(tags) < 8:
+            with new_log_path.open("a") as nf:
+                nf.write(json.dumps({"ayah_id": aid, "ref": f"{ayah['surah_number']}:{ayah['ayah_number']}", "error": err or "tags<8", "retry_t": datetime.now(timezone.utc).isoformat()}) + "\n")
+            cp["stats"]["failed"] += 1
+            print(f"  [{i+1}/{len(failed_entries)}] {ayah['surah_number']}:{ayah['ayah_number']} ✗ {err}")
+        else:
+            try:
+                api_patch("ayat", aid, {"topic_tags": tags})
+                completed.add(aid)
+                cp["stats"]["succeeded"] += 1
+                cp["completed_ids"] = list(completed)
+                marker_count = sum(1 for t in tags if has_tafsir_marker(t))
+                print(f"  [{i+1}/{len(failed_entries)}] {ayah['surah_number']}:{ayah['ayah_number']} ✓ {len(tags)} tags ({marker_count} markers)")
+            except Exception as patch_err:
+                with new_log_path.open("a") as nf:
+                    nf.write(json.dumps({"ayah_id": aid, "error": f"patch: {patch_err}", "retry_t": datetime.now(timezone.utc).isoformat()}) + "\n")
+                cp["stats"]["failed"] += 1
+        if (i + 1) % 25 == 0:
+            save_checkpoint(cp)
+        time.sleep(0.5)
+
+    save_checkpoint(cp)
+    print(f"\n=== Retry pass complete ===")
+    print(f"new fails (in .v4_retry_log.jsonl): {new_log_path.stat().st_size if new_log_path.exists() else 0} bytes")
+    return 0
+
+
+SUBCOMMANDS = {"audit": cmd_audit, "run": cmd_run, "status": cmd_status, "sample": cmd_sample, "retry-failed": cmd_retry_failed}
 
 
 def main():
