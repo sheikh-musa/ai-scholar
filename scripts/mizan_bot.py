@@ -1226,8 +1226,9 @@ RULES:
 - Use ONLY the provided data to answer. Do not make up verses, tafsir, or hadiths.
 - NEVER issue fiqh rulings.
 - When citing Shafi'i fiqh substrate (Safīnat al-Najā passages from juridical_translations),
-  return the matn passage VERBATIM with full attribution: "Safīnat al-Najā ({Chapter}, al-Marbūqī tr.,
-  al-inaam.com 2009)". Do NOT synthesize a new ruling from these passages. Append:
+  return the matn passage VERBATIM with full attribution: "Safīnat al-Najā (<Chapter>, al-Marbūqī tr.,
+  al-inaam.com 2009)" where <Chapter> is the baab name from the FIQH MATCHED PASSAGES context block.
+  Do NOT synthesize a new ruling from these passages. Append:
   "This passage is from the Shafi'i primer for reference; consult a qualified scholar for
   application to your specific situation."
 - Keep response concise (Telegram format, under 3000 chars).
