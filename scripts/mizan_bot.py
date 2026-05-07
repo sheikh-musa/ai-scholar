@@ -135,38 +135,44 @@ FIQH_TERM_EXPANSIONS = {
     # The al-Marbuqi tr. uses English worship terms; literal user keywords like
     # "wudu" or "arkan" miss without expansion. ILIKE searches use BOTH the
     # original transliteration AND each English equivalent.
+    #
+    # SINGLE-WORD EQUIVALENTS ONLY: spaces in PostgREST or=() ILIKE patterns
+    # break URL parsing without explicit percent-encoding. Multi-word phrases
+    # (e.g. "ritual bath", "obligatory acts") are split into their headword
+    # only ("bath", "obligatory"). Trade-off: lower precision; but matches
+    # are still surfaced via co-occurrence with other expanded terms.
     "wudu":     ["ablution"],
     "wuduʾ":    ["ablution"],
-    "ghusl":    ["ritual bath", "bath"],
-    "tayammum": ["dry ablution", "tayammum"],
+    "ghusl":    ["bath"],            # "ritual bath" headword
+    "tayammum": ["tayammum"],
     "taharah":  ["purity", "purification"],
     "tahara":   ["purity", "purification"],
     "najasah":  ["impurity", "filth"],
     "najis":    ["impurity"],
-    "salah":    ["prayer", "salah"],
+    "salah":    ["prayer"],
     "salat":    ["prayer"],
     "salaah":   ["prayer"],
-    "adhan":    ["call to prayer", "adhan"],
-    "athan":    ["call to prayer"],
+    "adhan":    ["adhan"],           # English text uses transliteration
+    "athan":    ["adhan"],
     "iqamah":   ["iqamah"],
-    "rukn":     ["pillar", "obligatory act"],
-    "arkan":    ["pillars", "obligatory acts"],
+    "rukn":     ["pillar", "obligatory"],
+    "arkan":    ["pillars", "obligatory"],
     "janazah":  ["funeral"],
-    "jumʿah":   ["friday prayer", "jumuah"],
-    "jumuah":   ["friday prayer"],
-    "zakah":    ["zakat", "alms", "poor-due"],
-    "zakat":    ["alms", "poor-due"],
+    "jumʿah":   ["friday", "jumuah"],
+    "jumuah":   ["friday"],
+    "zakah":    ["zakat", "alms"],
+    "zakat":    ["alms"],
     "saum":     ["fasting", "fast"],
     "sawm":     ["fasting", "fast"],
     "siyam":    ["fasting"],
     "ramadan":  ["ramadan"],
-    "iftar":    ["breaking the fast", "breaking fast"],
-    "suhur":    ["pre-dawn meal"],
+    "iftar":    ["iftar", "breaking"],
+    "suhur":    ["suhur"],
     "kaffara":  ["expiation"],
     "kaffarah": ["expiation"],
     "shafii":   ["shafi"],
     "shafi'i":  ["shafi"],
-    "madhhab":  ["school of law"],
+    "madhhab":  ["school"],
     "fiqh":     ["jurisprudence"],
 }
 
