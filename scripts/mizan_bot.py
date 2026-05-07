@@ -172,6 +172,25 @@ FIQH_TERM_EXPANSIONS = {
     "suhur":    ["suhur"],
     "kaffara":  ["expiation"],
     "kaffarah": ["expiation"],
+    # Action verbs the matn uses with verb-stem variation; map common user
+    # typings (nullifies/breaks/invalidates) to the verb stems present in the
+    # al-Marbuqi text plus the standard heading-noun "Factors That ...".
+    "nullify":      ["nullify", "factors", "invalidate"],
+    "nullifies":    ["nullify", "factors", "invalidate"],
+    "nullified":    ["nullify", "factors"],
+    "nullifying":   ["nullify", "factors"],
+    "invalidate":   ["nullify", "factors"],
+    "invalidates":  ["nullify", "factors"],
+    "invalidator":  ["nullify", "factors"],
+    "invalidators": ["nullify", "factors"],
+    "break":        ["break", "factors", "nullify"],
+    "breaks":       ["break", "factors", "nullify"],
+    "broken":       ["break", "factors", "nullify"],
+    "breaking":     ["break", "factors", "nullify"],
+    "mufsid":       ["nullify", "factors"],
+    "mufattir":     ["nullify", "factors"],
+    "mufsidat":     ["nullify", "factors"],
+    "mufattirat":   ["nullify", "factors"],
     "shafii":   ["shafi"],
     "shafi'i":  ["shafi"],
     "madhhab":  ["school"],
@@ -276,21 +295,41 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
 
 
 def _extract_keyword_snippet(text: str, keywords: list, before: int = 500, after: int = 1500) -> str:
-    """Return a window around the FIRST occurrence of any keyword in text.
-    Walk keywords in priority order (the order from expand_fiqh_keywords already
-    has user's literal terms first, expansions after). Anchor on the first match.
-    Falls back to text[:before+after] if no keyword matches."""
+    """Return a window around the most-specific keyword occurrence in text.
+
+    Strategy: a query like "what nullifies fasting" against the Siyam chapter
+    has "fasting" at offset 0 (chapter heading) and "Factors That Nullify" at
+    offset 6418 (the actual answer). Anchoring on first-match-by-priority
+    misses the answer because "fasting" is everywhere in the chapter.
+
+    Better: rank candidate keywords by RARITY in the text (fewer occurrences =
+    more topical specificity). Anchor on the first occurrence of the rarest
+    keyword that actually appears. Tie-break on the keyword's earlier position
+    in the original priority list.
+    """
     if not text:
         return ""
     text_lower = text.lower()
-    best_idx = None
-    for kw in keywords:
-        idx = text_lower.find(kw.lower())
-        if idx >= 0:
-            best_idx = idx
-            break
-    if best_idx is None:
+
+    # Build (keyword, count, first_idx, priority) tuples for keywords that appear.
+    candidates = []
+    for prio, kw in enumerate(keywords):
+        kw_l = kw.lower()
+        count = text_lower.count(kw_l)
+        if count == 0:
+            continue
+        idx = text_lower.find(kw_l)
+        candidates.append((kw, count, idx, prio))
+
+    if not candidates:
         return text[:before + after]
+
+    # Sort: rarest first (lowest count), tie-break on priority then position.
+    # Bias against ultra-common terms: if ANY keyword has count ≤ 5, prefer
+    # one of those over a 100+ count keyword.
+    candidates.sort(key=lambda c: (c[1], c[3], c[2]))
+    best_idx = candidates[0][2]
+
     start = max(0, best_idx - before)
     end = min(len(text), best_idx + after)
     snippet = text[start:end]
