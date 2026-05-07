@@ -253,11 +253,14 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
             + or_clause + f"&limit={fetch_limit}"
         )
         rows = supabase_get(path)
-        # Density rank: count total occurrences of any expanded keyword in
-        # the row's full text. Higher count = more topically relevant chapter.
+        # Density rank: count occurrences of USER'S LITERAL terms (raw_words)
+        # in the row's full text. Counting expansions causes drift — Salah's
+        # incidental "factors that nullify wudu/salah" content beats Siyam's
+        # actual fasting-nullifier section because expansions trigger across
+        # all chapters. Restricting to user's typed terms keeps ranking honest.
         def _density(row):
             full = (row.get("translation_text") or "").lower()
-            return sum(full.count(w.lower()) for w in words)
+            return sum(full.count(w.lower()) for w in raw_words)
         rows.sort(key=_density, reverse=True)
         rows = rows[:limit]
     except Exception:
@@ -295,40 +298,49 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
 
 
 def _extract_keyword_snippet(text: str, keywords: list, before: int = 500, after: int = 1500) -> str:
-    """Return a window around the most-specific keyword occurrence in text.
+    """Return a window around the first keyword occurrence in text, walked
+    by keyword priority order (user's literal terms first, then expansions).
 
-    Strategy: a query like "what nullifies fasting" against the Siyam chapter
-    has "fasting" at offset 0 (chapter heading) and "Factors That Nullify" at
-    offset 6418 (the actual answer). Anchoring on first-match-by-priority
-    misses the answer because "fasting" is everywhere in the chapter.
-
-    Better: rank candidate keywords by RARITY in the text (fewer occurrences =
-    more topical specificity). Anchor on the first occurrence of the rarest
-    keyword that actually appears. Tie-break on the keyword's earlier position
-    in the original priority list.
+    For Safīnat-class long chapter rows, the chapter title repeats the broad
+    topic word at offset 0 (e.g., 'Fasting of Ramaḍān' at the start of Siyam).
+    Anchoring there misses sub-section content. Mitigation: when a keyword's
+    first occurrence is in the chapter-heading zone (first 250 chars), look
+    for a LATER occurrence of the same keyword OR move on to the next priority
+    keyword. This trades chapter-intro snippets for sub-section snippets.
     """
     if not text:
         return ""
     text_lower = text.lower()
+    HEADING_ZONE = 250
 
-    # Build (keyword, count, first_idx, priority) tuples for keywords that appear.
-    candidates = []
-    for prio, kw in enumerate(keywords):
+    best_idx = None
+    for kw in keywords:
         kw_l = kw.lower()
-        count = text_lower.count(kw_l)
-        if count == 0:
-            continue
         idx = text_lower.find(kw_l)
-        candidates.append((kw, count, idx, prio))
+        if idx < 0:
+            continue
+        if idx < HEADING_ZONE:
+            # Look for a later occurrence past the heading zone.
+            later = text_lower.find(kw_l, HEADING_ZONE)
+            if later >= 0:
+                best_idx = later
+                break
+            # Otherwise this keyword is only in the heading; try next priority kw.
+            continue
+        best_idx = idx
+        break
 
-    if not candidates:
+    if best_idx is None:
+        # No keyword matched outside heading zone; fall back to first match
+        # anywhere (even if in heading) rather than empty snippet.
+        for kw in keywords:
+            idx = text_lower.find(kw.lower())
+            if idx >= 0:
+                best_idx = idx
+                break
+
+    if best_idx is None:
         return text[:before + after]
-
-    # Sort: rarest first (lowest count), tie-break on priority then position.
-    # Bias against ultra-common terms: if ANY keyword has count ≤ 5, prefer
-    # one of those over a 100+ count keyword.
-    candidates.sort(key=lambda c: (c[1], c[3], c[2]))
-    best_idx = candidates[0][2]
 
     start = max(0, best_idx - before)
     end = min(len(text), best_idx + after)
