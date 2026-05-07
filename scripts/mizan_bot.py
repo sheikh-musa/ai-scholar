@@ -191,6 +191,16 @@ FIQH_TERM_EXPANSIONS = {
     "mufattir":     ["nullify", "factors"],
     "mufsidat":     ["nullify", "factors"],
     "mufattirat":   ["nullify", "factors"],
+    # Family / pregnancy / nursing concession terms — al-Marbuqi text uses
+    # hyphenated 'breast-feeding' and singular 'pregnant'. User typings
+    # without hyphen miss substring match; expand to hyphenated form.
+    "breastfeeding": ["breast-feed", "breast-feeding", "nursing", "lactating"],
+    "breastfeed":   ["breast-feed", "nursing"],
+    "nursing":      ["breast-feed", "nursing", "lactating"],
+    "lactating":    ["breast-feed", "lactating"],
+    "pregnant":     ["pregnant", "expectant"],
+    "pregnancy":    ["pregnant", "expectant"],
+    "expectant":    ["pregnant", "expectant"],
     "shafii":   ["shafi"],
     "shafi'i":  ["shafi"],
     "madhhab":  ["school"],
