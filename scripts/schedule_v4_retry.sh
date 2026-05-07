@@ -10,7 +10,7 @@
 set -uo pipefail   # NOT -e: we want the script to log failures, not exit silently
 
 REPO_DIR="/Users/sheikhmusa/wingmen/projects/ai-scholar"
-RESET_TS="2026-05-13T08:00:00Z"
+RESET_TS="2026-05-13T16:00:00Z"  # macOS date -j parses without tz; SGT+8 means pass SGT wall-clock to get UTC 08:00
 LOG_FILE="$REPO_DIR/logs/v4_retry_scheduler.log"
 PROBE_STATE="$REPO_DIR/scripts/.probe_state.json"
 POST_RESET_BUFFER_SEC=300  # 5 min after reset before checking probe
