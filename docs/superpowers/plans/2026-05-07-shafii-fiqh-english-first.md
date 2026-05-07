@@ -2,13 +2,37 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ingest the operator-supplied bilingual Safīnat al-Najā translation by ʿAbdullah Muḥammad al-Marbūqī al-Shāfiʿī into `juridical_texts` substrate, then wire `mizan_bot.py` retrieval to surface fiqh-class queries against it as retrieve-only echo (no compose-layer synthesis per AL-BAYAN-COMPOSE-001 C4 + INV-7 paired-scholar gate).
+---
 
-**Architecture:** PDF parser extracts chapter-aligned passages from `docs/sources/safinat-al-najah-marbuqi-tr.pdf` (185 pages, bilingual Arabic+English). Each chapter or sub-section becomes one `juridical_texts` row with `madhab='shafii'`, `dalil_strength_tier='primer_juridical'`, `text_role='matn'`, populated `chapter_path`, `arabic_text`, `english_text`, `output_tier='quoted'` for verbatim Marbuqi prose / `'paraphrased'` for editorial chapter-row alignment. Migration `20260429_001_juridical_corpus.sql` applies first (operator-direct via `supabase migration up` or with Musa-explicit auth). Single `ingestion_provenance` row records the SHA-pinned PDF + sadaqah-jariyah license declaration. `mizan_bot.py` adds a `lookup_fiqh()` routing path that consults `juridical_texts` when query mentions Shafi'i / fiqh / madhhab keywords, returns matn passages with attribution, never composes new rulings.
+## PATH B REFINED — schema correction per CAI-RESP-136
+
+**CAI ruling:** CAI-RESP-136 / strategic_decisions id 756.
+**cc-scholar escalation:** agent_messages #1399 (schema mismatch escalation to cai).
+**cc-scholar reply confirming 4 downstream asks:** agent_messages #1400.
+
+CAI rejected Path A (extend juridical_texts with English columns), Path C (Arabic-only), Path D (defer).
+CAI adopted Path B refined: new `public.juridical_translations` table FK'd to `juridical_texts`, 1:N cardinality.
+
+**Schema correction history:** the original plan assumed `juridical_texts` had English columns
+(`english_text`, `chapter_path`, `output_tier`, `provenance_id`, etc.) matching migration
+`20260429_001_juridical_corpus.sql`. Deployed state (verified via `information_schema.columns`,
+per CAI-RESP-136 meta-process amendment) shows the ACTUAL deployed migration is
+`20260428194802_al_bayan_003_juridical_corpus.sql` — Arabic-only schema with `text_name`,
+`baab_or_section`, `baab_order`, `arabic_text NOT NULL`, `arabic_text_sha256`, `ingestion_provenance_id`.
+The stale `20260429_001_juridical_corpus.sql` shadow file was deleted (never applied; commit `360f9cc`).
+
+**Arabic-as-source-of-truth preserved:** `juridical_texts.arabic_text_sha256` remains canonical.
+Translations are derivative renderings on a separate provenance chain (`juridical_translations.translation_text_sha256`).
+
+---
+
+**Goal:** Ingest the operator-supplied bilingual Safīnat al-Najā translation by ʿAbdullah Muḥammad al-Marbūqī al-Shāfiʿī into `juridical_texts` (Arabic matn) + `juridical_translations` (English translation) substrate, then wire `mizan_bot.py` retrieval to surface fiqh-class queries against it as retrieve-only echo (no compose-layer synthesis per AL-BAYAN-COMPOSE-001 C4 + INV-7 paired-scholar gate).
+
+**Architecture:** PDF parser extracts chapter-aligned passages from `docs/sources/safinat-al-najah-marbuqi-tr.pdf` (185 pages, bilingual Arabic+English). Each chapter becomes one `juridical_texts` row (Arabic matn) and one `juridical_translations` row (English, FK'd to the texts row). Migration `20260507_001_juridical_translations.sql` adds the `juridical_translations` table (the parent `juridical_texts` table is ALREADY DEPLOYED as `20260428194802_al_bayan_003_juridical_corpus.sql`). Single `ingestion_provenance` row records the SHA-pinned PDF + sadaqah-jariyah license declaration (shared across both row types via `ingestion_provenance_id`). `mizan_bot.py` adds a `match_fiqh_query()` routing path that consults `juridical_translations` when query mentions Shafi'i / fiqh / madhhab keywords, returns matn passages with attribution, never composes new rulings.
 
 **Tech Stack:** Python 3, pypdf (in temp venv at `/tmp/pdfvenv`), Supabase REST (service-role for inserts), `mizan_bot.py` extension.
 
-**Consensus source:** AL-BAYAN-003-AMEND-ENGLISH-FIRST-001 (strategic_decisions id 699, amended 2026-05-07 with license verification + Q3-Q5 operator ratifications).
+**Consensus source:** AL-BAYAN-003-AMEND-ENGLISH-FIRST-002 (strategic_decisions id 756, CAI-RESP-136, amended from id 699 / English-FIRST-001 due to schema mismatch correction).
 
 **Not in this plan (deferred):**
 - Reliance of the Traveller (Track 2) — copyright posture pending operator decision
@@ -16,355 +40,143 @@
 - Compose-layer synthesis from fiqh substrate — gated on INV-7 paired-scholar program (C4 boundary)
 - Hybrid retrieval (semantic embeddings via `juridical_embeddings`) — gated on Modal provisioning per EMBED_PIPELINE_v02; FTS-only acceptable for v0.2 echo path
 - Tier 3 specialty fiqh sources (Musnad al-Bazzar, Mukhtasar al-Uluw) — separate Tier 3 filings per AL-BAYAN-CORPUS-EXPANSION-001 amended body
+- Phase 2 Arabic refresh: arabic_text from PDF extraction is rough (pypdf RTL). A Phase 2 refresh script can overwrite rows from al-Maktaba al-Shamela or the publisher's digital edition.
 
 ---
 
 ## File Structure
 
-| File | Change | Responsibility |
-|------|--------|----------------|
+| File | Change | Status |
+|------|--------|--------|
 | `docs/sources/safinat-al-najah-marbuqi-tr.pdf` | Already present | Operator-supplied source, SHA `679404ac…ad491`. Committed for audit pinning |
-| `scripts/ingest_safinat_marbuqi.py` | Create | PDF parsing + chapter alignment + REST POST to `juridical_texts` + `ingestion_provenance` row write. Subcommands: `extract` (dry-run prints chapters), `provenance` (writes provenance row), `ingest` (writes content rows), `verify` (counts + spot-check against PDF) |
-| `scripts/mizan_bot.py` | Modify | Add `match_fiqh_query()` routing helper + `lookup_fiqh()` retrieval against `juridical_texts`; wire into `gather_context()` after the existing surah-alias / hadith-alias detection |
+| `supabase/migrations/20260429_001_juridical_corpus.sql` | DELETED (commit `360f9cc`) | Was never applied to remote; declared wrong schema. Shadow file removed per CAI-RESP-136 downstream ask 1 |
+| `supabase/migrations/20260507_001_juridical_translations.sql` | NEW (commit `7ebc7b2`) | Adds `juridical_translations` table FK'd to `juridical_texts`. **Do NOT apply until 2026-05-08T01:32:09Z window-close or Musa early-close consent** |
+| `scripts/ingest_safinat_marbuqi.py` | REWRITTEN for two-step insert (commit `6f7ded6`) | cmd_ingest: Step 1 inserts Arabic into `juridical_texts`; Step 2 inserts English into `juridical_translations`. verify_schema() gate guards both cmd_provenance + cmd_ingest |
+| `scripts/mizan_bot.py` | Modify | Add `match_fiqh_query()` routing helper + `lookup_fiqh()` retrieval against `juridical_translations`; wire into `gather_context()` after the existing surah-alias / hadith-alias detection |
 | `docs/SAFINAT_INGESTION_RUNBOOK.md` | Create | Operator runbook: migration apply step, post-ingest smoke tests, recovery procedure |
 
 ---
 
-## Task 1: Apply juridical_corpus migration
+## Task 1: Apply juridical_translations migration
 
 **Files:**
-- Modify (run): `supabase/migrations/20260429_001_juridical_corpus.sql` (already committed; apply only)
+- Run: `supabase/migrations/20260507_001_juridical_translations.sql` (new file, committed; apply only)
 
-- [ ] **Step 1: Verify pre-state — table does not exist yet**
+**Pre-condition:** The parent `juridical_texts` table is ALREADY DEPLOYED via
+`20260428194802_al_bayan_003_juridical_corpus.sql`. Task 1 here only applies the NEW
+`20260507_001_juridical_translations.sql` migration (adds `juridical_translations` table).
+
+**Apply gate:** `supabase migration up` after challenge_window closes **2026-05-08T01:32:09Z**,
+OR with explicit Musa early-close consent. cc-scholar does NOT pre-apply.
+
+- [ ] **Step 1: Verify pre-state — juridical_texts exists, juridical_translations does not yet**
 
 ```bash
 set -a && source ~/wingmen/projects/ihsanos/.env.local && set +a
-curl -s -I -H "apikey: $ORCHESTRATOR_SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $ORCHESTRATOR_SUPABASE_SERVICE_KEY" -H "Prefer: count=exact" "$ORCHESTRATOR_SUPABASE_URL/rest/v1/juridical_texts?select=id&limit=1" | grep -i content-range
+# juridical_texts should return [] (empty), not 404
+curl -s -H "apikey: $ORCHESTRATOR_SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $ORCHESTRATOR_SUPABASE_SERVICE_KEY" "$ORCHESTRATOR_SUPABASE_URL/rest/v1/juridical_texts?select=id&limit=1"
+# juridical_translations should return 404 (table not yet deployed)
+curl -s -H "apikey: $ORCHESTRATOR_SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $ORCHESTRATOR_SUPABASE_SERVICE_KEY" "$ORCHESTRATOR_SUPABASE_URL/rest/v1/juridical_translations?select=id&limit=1"
 ```
-Expected: `content-range: */0` (table exists per earlier check; just confirm count is 0).
 
-- [ ] **Step 2: Apply migration**
+- [ ] **Step 2: Apply migration (operator-direct or cc-scholar with Musa auth)**
 
 ```bash
 cd /Users/sheikhmusa/wingmen/projects/ai-scholar
 supabase migration up --project-ref tscuymavysscrvoberrr
 ```
-Expected: migration `20260429_001_juridical_corpus` runs idempotently; if already applied, supabase CLI reports no-op. Either outcome is OK — the migration uses `CREATE TABLE IF NOT EXISTS` and `CREATE TYPE … EXCEPTION WHEN duplicate_object THEN NULL` so re-applying is safe.
 
-- [ ] **Step 3: Verify post-state — enums + tables exist**
+Expected: migration `20260507_001_juridical_translations` runs; supabase CLI confirms applied.
+
+- [ ] **Step 3: Verify post-state — both tables accessible**
 
 ```bash
-curl -s "$ORCHESTRATOR_SUPABASE_URL/rest/v1/juridical_texts?select=*&limit=1" -H "apikey: $ORCHESTRATOR_SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $ORCHESTRATOR_SUPABASE_SERVICE_KEY"
+curl -s "$ORCHESTRATOR_SUPABASE_URL/rest/v1/juridical_translations?select=*&limit=1" \
+  -H "apikey: $ORCHESTRATOR_SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $ORCHESTRATOR_SUPABASE_SERVICE_KEY"
 ```
 Expected: `[]` (table exists, empty) — NOT a 404 or schema error.
 
-- [ ] **Step 4: No commit needed** — migration already committed earlier; this task only applies it.
+- [ ] **Step 4: No commit needed** — migration already committed; this task only applies it.
 
 ---
 
 ## Task 2: PDF extraction + chapter alignment (dry-run)
 
 **Files:**
-- Create: `scripts/ingest_safinat_marbuqi.py`
+- (Already exists): `scripts/ingest_safinat_marbuqi.py`
 
-- [ ] **Step 1: Write the script scaffold with `extract` subcommand**
-
-Create `scripts/ingest_safinat_marbuqi.py`:
-
-```python
-#!/usr/bin/env python3
-"""Safīnat al-Najā (al-Marbūqī tr.) ingestion driver.
-
-Subcommands:
-  extract     Dry-run — extract chapters from PDF, print chapter_path + first 200 chars of each. No DB writes.
-  provenance  Write the single ingestion_provenance row. Idempotent: skips if SHA already present.
-  ingest      Write juridical_texts content rows. Reads from extract output. Idempotent per chapter_path: skips if row exists.
-  verify      Post-ingest sanity: row count, sample 5 random rows, spot-check English text fragments against PDF source.
-
-Source: docs/sources/safinat-al-najah-marbuqi-tr.pdf (operator-supplied, SHA 679404ac…ad491).
-License: sadaqah jariyah (publisher al-inaam.com explicit reproduction grant per page 3).
-"""
-import argparse
-import hashlib
-import json
-import os
-import re
-import sys
-import urllib.parse
-import urllib.request
-from pathlib import Path
-
-# pypdf installed in /tmp/pdfvenv per session 2026-05-07. If running standalone,
-# `python3 -m venv /tmp/pdfvenv && /tmp/pdfvenv/bin/pip install pypdf`.
-sys.path.insert(0, "/tmp/pdfvenv/lib/python3.14/site-packages")
-import pypdf  # type: ignore
-
-PDF_PATH = Path(__file__).parent.parent / "docs/sources/safinat-al-najah-marbuqi-tr.pdf"
-EXPECTED_SHA = "679404ac682aea814ed726b6255611fd4624a2d724fe6fc5969cd430255ad491"
-
-SUPABASE_URL = os.environ.get("ORCHESTRATOR_SUPABASE_URL", "https://tscuymavysscrvoberrr.supabase.co")
-SUPABASE_KEY = os.environ.get("ORCHESTRATOR_SUPABASE_SERVICE_KEY", "")
-if not SUPABASE_KEY:
-    print("ERROR: ORCHESTRATOR_SUPABASE_SERVICE_KEY not set", file=sys.stderr)
-    sys.exit(2)
-
-PROMPT_VERSION = "safinat-marbuqi-ingest-v1-2026-05-07"
-TRANSLATOR = "ʿAbdullah Muḥammad al-Marbūqī al-Shāfiʿī"
-SOURCE_WORK = "Safīnat al-Najā (al-Marbūqī tr., al-inaam.com 2009)"
-SOURCE_URL = "docs/sources/safinat-al-najah-marbuqi-tr.pdf"  # repo-pinned canonical
-SOURCE_MAINTAINER = "al-inaam.com"
-LICENSE_DECLARATION = (
-    "Translator/publisher explicit reproduction grant per page 3 of source PDF: "
-    "'Any part of this publication may be reproduced, stored in a retrieval system "
-    "or transmitted in any form or by any means, electronic, mechanical, photocopying, "
-    "recording or otherwise, without the prior permission of the publisher.' "
-    "Sadaqah jariyah posture per Hadhrami Shafi'i publishing tradition; verified by Musa 2026-05-07."
-)
-
-# Chapter heading patterns from PDF TOC inspection. Order matters (longest first
-# to avoid 'Salah' matching inside 'Salah Times').
-CHAPTER_HEADINGS = [
-    "Muqaddimah", "Islam and Iman", "Al-Ahkam al-Sharʿiyyah",
-    "Taharah", "Adhan", "Salah", "Salah Janazah",
-    "Zakah", "Saum", "Hajj and ʿUmrah",
-    "Bibliography",
-    # Biographical appendix
-    "Al-Imām al-Rāfiʿī", "Al-Imām al-Nawawī", "Shaykh al-Islām Zakariyyā al-Anṣārī",
-    "Al-Imām Ibn Ḥajar al-Haytamī", "Al-Imām Muḥammad al-Shirbīnī al-Khāṭib",
-]
-
-
-def compute_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def extract_pages(path: Path) -> list[str]:
-    reader = pypdf.PdfReader(str(path))
-    return [(p.extract_text() or "").strip() for p in reader.pages]
-
-
-def segment_chapters(pages: list[str]) -> list[dict]:
-    """Walk pages, identify chapter boundaries by heading match in extracted text.
-    Returns list of dicts with chapter_path, page_start, page_end, english_text.
-    """
-    chapters = []
-    current = None
-    for i, page_text in enumerate(pages):
-        # Try to match a chapter heading at the start of meaningful text on this page
-        first_lines = "\n".join(page_text.split("\n")[:3])
-        matched_heading = None
-        for h in CHAPTER_HEADINGS:
-            if h in first_lines:
-                matched_heading = h
-                break
-        if matched_heading and (current is None or current["chapter_path"] != matched_heading):
-            if current is not None:
-                current["page_end"] = i - 1
-                chapters.append(current)
-            current = {
-                "chapter_path": matched_heading,
-                "page_start": i,
-                "page_end": i,
-                "english_text_pages": [page_text],
-            }
-        elif current is not None:
-            current["english_text_pages"].append(page_text)
-    if current is not None:
-        current["page_end"] = len(pages) - 1
-        chapters.append(current)
-    # Concatenate page texts per chapter
-    for ch in chapters:
-        ch["english_text"] = "\n\n".join(ch["english_text_pages"])
-        del ch["english_text_pages"]
-    return chapters
-
-
-def cmd_extract(args):
-    if not PDF_PATH.exists():
-        print(f"ERROR: PDF not found at {PDF_PATH}", file=sys.stderr)
-        return 2
-    sha = compute_sha256(PDF_PATH)
-    if sha != EXPECTED_SHA:
-        print(f"ERROR: PDF SHA mismatch — expected {EXPECTED_SHA}, got {sha}", file=sys.stderr)
-        return 3
-    print(f"PDF SHA verified: {sha}")
-    pages = extract_pages(PDF_PATH)
-    print(f"Extracted {len(pages)} pages")
-    chapters = segment_chapters(pages)
-    print(f"Segmented into {len(chapters)} chapter(s):")
-    for ch in chapters:
-        eng = ch["english_text"][:200].replace("\n", " ")
-        print(f"  {ch['chapter_path']:35} pages {ch['page_start']:3}-{ch['page_end']:3}: {eng}…")
-    return 0
-
-
-def supabase_post(table: str, data: dict | list) -> dict:
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
-    payload = json.dumps(data).encode("utf-8")
-    req = urllib.request.Request(url, data=payload, headers={
-        "apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json", "Prefer": "return=representation",
-    })
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def cmd_provenance(args):
-    """Write the single ingestion_provenance row. Idempotent on SHA."""
-    sha = compute_sha256(PDF_PATH)
-    # Check if already present
-    url = f"{SUPABASE_URL}/rest/v1/ingestion_provenance?source_file_sha256=eq.{sha}&select=id&limit=1"
-    req = urllib.request.Request(url, headers={
-        "apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
-    })
-    with urllib.request.urlopen(req) as resp:
-        existing = json.loads(resp.read().decode("utf-8"))
-    if existing:
-        print(f"Provenance row already present: id={existing[0]['id']}")
-        return 0
-    row = {
-        "source_url": SOURCE_URL,
-        "source_maintainer": SOURCE_MAINTAINER,
-        "license_declaration": LICENSE_DECLARATION,
-        "source_file_sha256": sha,
-        "verified_by_identity": "musa",
-        "notes": "Bilingual Arabic+English. 185 pages. Edition Ṣafar 1430 H (Feb 2009). "
-                 f"Translator {TRANSLATOR}. Operator-supplied 2026-05-07.",
-    }
-    result = supabase_post("ingestion_provenance", row)
-    print(f"Wrote ingestion_provenance row: id={result[0]['id']}")
-    return 0
-
-
-def cmd_ingest(args):
-    """Write juridical_texts content rows. Idempotent per chapter_path within source SHA."""
-    pages = extract_pages(PDF_PATH)
-    chapters = segment_chapters(pages)
-    sha = compute_sha256(PDF_PATH)
-    # Get the provenance id
-    url = f"{SUPABASE_URL}/rest/v1/ingestion_provenance?source_file_sha256=eq.{sha}&select=id&limit=1"
-    req = urllib.request.Request(url, headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"})
-    with urllib.request.urlopen(req) as resp:
-        prov = json.loads(resp.read().decode("utf-8"))
-    if not prov:
-        print("ERROR: ingestion_provenance row missing — run `provenance` subcommand first", file=sys.stderr)
-        return 4
-    provenance_id = prov[0]["id"]
-    written = 0
-    skipped = 0
-    for ch in chapters:
-        # Check if row exists
-        path_enc = urllib.parse.quote(ch["chapter_path"])
-        check_url = f"{SUPABASE_URL}/rest/v1/juridical_texts?chapter_path=eq.{path_enc}&provenance_id=eq.{provenance_id}&select=id&limit=1"
-        req = urllib.request.Request(check_url, headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"})
-        with urllib.request.urlopen(req) as resp:
-            existing = json.loads(resp.read().decode("utf-8"))
-        if existing:
-            skipped += 1
-            continue
-        # Determine output_tier — chapter-level rows are 'paraphrased' (editorial alignment)
-        # since we're concatenating pages. Future rule-level granularity can use 'quoted'.
-        row = {
-            "madhab": "shafii",
-            "dalil_strength_tier": "primer_juridical",
-            "text_role": "matn",
-            "scholar_name": TRANSLATOR,
-            "source_work": SOURCE_WORK,
-            "chapter_path": ch["chapter_path"],
-            "arabic_text": None,  # Bilingual extraction TBD; English-first per amended decision
-            "english_text": ch["english_text"][:50000],  # cap per row to avoid blob rows
-            "output_tier": "paraphrased",
-            "provenance_id": provenance_id,
-            "page_start": ch["page_start"],
-            "page_end": ch["page_end"],
-        }
-        result = supabase_post("juridical_texts", row)
-        written += 1
-        print(f"  + {ch['chapter_path']:35} (pages {ch['page_start']:3}-{ch['page_end']:3}, {len(ch['english_text']):6} chars)")
-    print(f"\nDone: {written} rows written, {skipped} already present.")
-    return 0
-
-
-def cmd_verify(args):
-    """Spot-check ingested rows."""
-    url = f"{SUPABASE_URL}/rest/v1/juridical_texts?source_work=eq.{urllib.parse.quote(SOURCE_WORK)}&select=chapter_path,page_start,page_end,output_tier&order=page_start"
-    req = urllib.request.Request(url, headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"})
-    with urllib.request.urlopen(req) as resp:
-        rows = json.loads(resp.read().decode("utf-8"))
-    print(f"juridical_texts rows for {SOURCE_WORK}: {len(rows)}")
-    for r in rows:
-        print(f"  {r['chapter_path']:35} pp {r['page_start']:3}-{r['page_end']:3}  tier={r['output_tier']}")
-    return 0
-
-
-SUBCOMMANDS = {"extract": cmd_extract, "provenance": cmd_provenance, "ingest": cmd_ingest, "verify": cmd_verify}
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("cmd", choices=list(SUBCOMMANDS))
-    args, _ = parser.parse_known_args()
-    return SUBCOMMANDS[args.cmd](args)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-```
-
-- [ ] **Step 2: Run `extract` to verify chapter segmentation works**
+- [ ] **Step 1: Run `extract` to verify chapter segmentation + Arabic extraction quality**
 
 ```bash
 cd /Users/sheikhmusa/wingmen/projects/ai-scholar
+set -a && source ~/wingmen/projects/ihsanos/.env.local && set +a
 python3 scripts/ingest_safinat_marbuqi.py extract
 ```
-Expected: prints SHA verification + 10-15 chapter segments with page ranges + first 200 chars each. If chapter count is suspicious (e.g., 1 chapter or 50+), the segmentation needs tuning before `ingest` runs.
 
-- [ ] **Step 3: Commit the ingestion script**
+Expected: prints SHA verification + chapter segments with page ranges, Arabic char counts, and first
+200 chars of English per chapter. Look for `[WARN:<50chars]` flags on Arabic — those chapters will
+be SKIPPED by `ingest`. If chapter count is suspicious (e.g., 1 or 50+), the segmentation needs
+tuning before `ingest` runs.
 
-```bash
-git add scripts/ingest_safinat_marbuqi.py
-git commit -m "feat(juridical): Safīnat al-Marbūqī ingestion driver — extract / provenance / ingest / verify subcommands"
-```
+- [ ] **Step 2: No commit needed** — `extract` is read-only; script already committed at `6f7ded6`.
 
 ---
 
-## Task 3: Write provenance + content rows
+## Task 3: Write provenance + content rows (two-step insert)
 
 **Files:**
-- Modify (run only): the existing script
+- Modify (run only): the existing script — requires migration from Task 1 to be applied first.
+
+**Insert pattern:** cmd_provenance + cmd_ingest both call verify_schema() first. If
+`juridical_translations` is not yet deployed, both commands exit with code 5.
 
 - [ ] **Step 1: Write provenance row**
 
 ```bash
 python3 scripts/ingest_safinat_marbuqi.py provenance
 ```
-Expected: prints "Wrote ingestion_provenance row: id=<uuid>". Idempotent — re-running gives "already present".
+Expected: "Schema verified: juridical_texts + juridical_translations both present." then
+"Wrote ingestion_provenance row: id=<uuid>". Idempotent — re-running gives "already present".
 
-- [ ] **Step 2: Write content rows**
+- [ ] **Step 2: Write content rows (two-step insert per chapter)**
 
 ```bash
 python3 scripts/ingest_safinat_marbuqi.py ingest
 ```
-Expected: prints `+ <chapter_path> (pages X-Y, NNNN chars)` per chapter; total ~10-15 rows.
+Expected per chapter:
+```
+  + <chapter_path>       (pages X-Y,  NNN ar / MMMM en chars)
+```
+And a final summary:
+```
+Done: N chapters written, 0 already present, K skipped (insufficient Arabic extraction).
+```
+Chapters with <50 Arabic chars are SKIPPED — note which chapters are flagged and plan Phase 2
+Arabic refresh from al-Maktaba al-Shamela.
 
-- [ ] **Step 3: Verify**
+Each written chapter produces:
+- 1 row in `juridical_texts` (Arabic matn + metadata)
+- 1 row in `juridical_translations` (English FK'd to juridical_texts.id)
+
+- [ ] **Step 3: Verify — JOIN both tables**
 
 ```bash
 python3 scripts/ingest_safinat_marbuqi.py verify
 ```
-Expected: lists all juridical_texts rows for `Safīnat al-Najā (al-Marbūqī tr., al-inaam.com 2009)`.
+Expected: lists all `juridical_translations` rows for translator ʿAbdullah Muḥammad al-Marbūqī,
+joined with `juridical_texts.baab_or_section`, confirming both table sides populated.
 
 - [ ] **Step 4: No commit needed** — Task 3 is data-write only, no code changes.
 
 ---
 
-## Task 4: Wire `mizan_bot.py` to retrieve from juridical_texts
+## Task 4: Wire `mizan_bot.py` to retrieve from juridical_translations
 
 **Files:**
 - Modify: `scripts/mizan_bot.py`
+
+Retrieval now queries `juridical_translations` (joined to `juridical_texts` for matn metadata)
+rather than `juridical_texts` directly, since English text lives in the translations table.
 
 - [ ] **Step 1: Add fiqh-query detection helper**
 
@@ -381,7 +193,7 @@ FIQH_KEYWORDS = {
 }
 
 def match_fiqh_query(text: str) -> bool:
-    """Detect Shafi'i fiqh keyword in query — triggers juridical_texts retrieval."""
+    """Detect Shafi'i fiqh keyword in query — triggers juridical retrieval."""
     t = text.lower()
     return any(kw in t for kw in FIQH_KEYWORDS)
 ```
@@ -390,24 +202,26 @@ def match_fiqh_query(text: str) -> bool:
 
 ```python
 def lookup_fiqh(keywords: str, limit: int = 3) -> dict:
-    """Retrieve from juridical_texts via FTS-on-english_text fallback.
+    """Retrieve from juridical_translations via ILIKE fallback.
     Phase 2 will swap to search_juridical_semantic RPC once embeddings populate."""
     fts_query = " OR ".join(keywords.split()[:4])
     try:
-        rows = supabase_get("juridical_texts", {
-            "english_text": f"ilike.%{fts_query}%",  # fallback ILIKE; FTS RPC pending Phase 2
-            "select": "scholar_name,source_work,chapter_path,english_text,output_tier",
+        rows = supabase_get("juridical_translations", {
+            "translation_text": f"ilike.%{fts_query}%",
+            "select": "translator_name,translation_source_work,output_tier,translation_text,"
+                      "juridical_texts(text_name,baab_or_section)",
             "limit": str(min(limit, 5)),
         })
     except Exception:
         return {"results": []}
     out = []
     for r in rows:
+        jt = r.get("juridical_texts") or {}
         out.append({
-            "scholar": r["scholar_name"],
-            "source": r["source_work"],
-            "chapter_path": r["chapter_path"],
-            "english_text": (r.get("english_text") or "")[:1500],
+            "scholar": r["translator_name"],
+            "source": r["translation_source_work"],
+            "chapter_path": jt.get("baab_or_section", ""),
+            "english_text": (r.get("translation_text") or "")[:1500],
             "tier": r["output_tier"],
         })
     return {"results": out}
@@ -415,10 +229,10 @@ def lookup_fiqh(keywords: str, limit: int = 3) -> dict:
 
 - [ ] **Step 3: Wire into `gather_context()`**
 
-In `gather_context()`, after the existing tafsir-FTS block (around line 535-548 post `446f562`), add:
+In `gather_context()`, after the existing tafsir-FTS block, add:
 
 ```python
-# AL-BAYAN-003-AMEND-ENGLISH-FIRST-001 Track 1 retrieve-only echo —
+# AL-BAYAN-003-AMEND-ENGLISH-FIRST-002 Track 1 retrieve-only echo —
 # Shafi'i fiqh substrate (Safīnat al-Marbūqī). Retrieval ONLY; no compose-
 # layer synthesis per C4 + INV-7 paired-scholar gate.
 if match_fiqh_query(question) and _ctx_size(context_parts) < MAX_CONTEXT:
@@ -442,11 +256,11 @@ if match_fiqh_query(question) and _ctx_size(context_parts) < MAX_CONTEXT:
 
 - [ ] **Step 4: Update the `ask_claude` system prompt to include the C4 boundary**
 
-In `ask_claude()` (around line 577 post `446f562`), in the RULES section, add a new bullet AFTER the existing "NEVER issue fiqh rulings" line:
+In `ask_claude()`, in the RULES section, add a new bullet AFTER the existing "NEVER issue fiqh rulings" line:
 
 ```
-- When citing fiqh-substrate passages (Safīnat al-Najā / juridical_texts),
-  return the matn passage VERBATIM with attribution. Do NOT synthesize a
+- When citing fiqh-substrate passages (Safīnat al-Najā / juridical_translations),
+  return the translation passage VERBATIM with attribution. Do NOT synthesize a
   new ruling. The user must consult a qualified scholar for application.
 ```
 
@@ -455,7 +269,7 @@ In `ask_claude()` (around line 577 post `446f562`), in the RULES section, add a 
 ```bash
 python3 -c "compile(open('scripts/mizan_bot.py').read(), 'mb', 'exec')"
 git add scripts/mizan_bot.py
-git commit -m "feat(mizan-bot): Shafi'i fiqh retrieval — match_fiqh_query + lookup_fiqh + gather_context wire-in (retrieve-only per C4 + INV-7 gate)"
+git commit -m "feat(mizan-bot): Shafi'i fiqh retrieval — match_fiqh_query + lookup_fiqh (juridical_translations) + gather_context wire-in (retrieve-only per C4 + INV-7 gate)"
 ```
 
 - [ ] **Step 6: Restart bot** — operator-direct via launchctl kickstart, or with cc-scholar auth.
@@ -474,50 +288,71 @@ After bot restart, query Mizan with:
 - `"Shafii ruling on fasting kaffarah"` → expect Saum chapter passage
 - `"Conditions for salah"` → expect Salah chapter passage
 
-Bot should return matn passages with `Source: Safīnat al-Najā (al-Marbūqī tr.…)` headers, NO new rulings synthesized.
+Bot should return translation passages with `Source: Safīnat al-Najā (al-inaam.com 2009)` headers,
+NO new rulings synthesized.
 
 - [ ] **Step 2: Write runbook**
 
 `docs/SAFINAT_INGESTION_RUNBOOK.md`:
 - Pre-run checklist (env sourced, migration applied, provenance row written)
-- Re-ingestion procedure (if PDF revised: bump SHA, write new provenance row, drop old juridical_texts rows for old provenance_id, re-run `ingest`)
-- Rollback procedure: `DELETE FROM juridical_texts WHERE provenance_id=<old>; DELETE FROM ingestion_provenance WHERE id=<old>;`
+- Two-step insert verification (check both `juridical_texts` + `juridical_translations` counts match)
+- Re-ingestion procedure (if PDF revised: bump SHA, write new provenance row, drop old juridical_texts
+  rows for old provenance_id — cascade deletes associated juridical_translations rows — re-run `ingest`)
+- Rollback procedure:
+  ```sql
+  -- cascade delete removes juridical_translations rows automatically (ON DELETE CASCADE)
+  DELETE FROM juridical_texts WHERE ingestion_provenance_id = '<old>';
+  DELETE FROM ingestion_provenance WHERE id = '<old>';
+  ```
 - Tier 2 future work: rule-level granularity (each fiqh rule = 1 row, `output_tier='quoted'`)
-- Phase 2 future work: bilingual ingestion (populate `arabic_text` column from PDF Arabic side)
+- Phase 2 future work: Arabic quality refresh — overwrite `arabic_text` + recompute `arabic_text_sha256`
+  from al-Maktaba al-Shamela or publisher's digital edition (Arabic side of juridical_texts)
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add docs/SAFINAT_INGESTION_RUNBOOK.md
-git commit -m "docs(juridical): Safīnat ingestion runbook"
+git commit -m "docs(juridical): Safīnat ingestion runbook (Path B refined two-step pattern)"
 ```
 
 ---
 
 ## Self-Review Checklist
 
-- **Spec coverage** (AL-BAYAN-003-AMEND-ENGLISH-FIRST-001):
-  - Track 1 ingestion: Tasks 1-3 ✅
-  - Track 3 migration apply: Task 1 Step 2 ✅
+- **Schema matches deployed state (CAI-RESP-136 meta-process amendment):**
+  - `juridical_texts` deployed with Arabic-only schema (text_name, baab_or_section, baab_order, arabic_text NOT NULL, arabic_text_sha256) ✅ verified via information_schema
+  - `juridical_translations` new table for English (FK to juridical_texts.id) per Path B refined ✅ migration committed
+  - Stale `20260429_001_juridical_corpus.sql` shadow file deleted ✅ commit `360f9cc`
+
+- **Spec coverage (AL-BAYAN-003-AMEND-ENGLISH-FIRST-002):**
+  - Track 1 ingestion: Tasks 1-3 (migration + extract + two-step insert) ✅
   - C4 retrieve-only-no-synthesis: Task 4 wire-in honors boundary; Task 4 Step 4 reinforces in system prompt ✅
-  - INV-7 paired-scholar gate: scholar_of_record null in juridical_texts rows for v0.2 ✅
-  - T-1 tier discipline: every row has output_tier set ✅
-  - License provenance: ingestion_provenance row with sadaqah-jariyah declaration ✅
-  - Q5 citation format: `Safīnat al-Najā (al-Marbūqī tr., al-inaam.com 2009)` ✅
+  - INV-7 paired-scholar gate: no compose-layer synthesis in ingest script or bot wire-in ✅
+  - T-1 tier discipline: every `juridical_translations` row has `output_tier` set ✅
+  - Arabic-as-source-of-truth: `juridical_texts.arabic_text_sha256` canonical; translations on separate chain ✅
+  - License provenance: ingestion_provenance row with sadaqah-jariyah declaration; shared across both row types ✅
+  - Q5 citation format: `Safīnat al-Najā (al-inaam.com 2009)` ✅
 
-- **Placeholder scan:** TBD only on Phase 2 work (bilingual Arabic, rule-level granularity, semantic embeddings) — those are explicitly deferred to Tier 2 future work.
+- **Idempotency:** ingest checks (text_name, baab_or_section, ingestion_provenance_id) on juridical_texts before both inserts ✅
+- **Arabic extraction safety:** chapters with <50 chars are SKIPPED not ingested as garbage ✅
+- **Schema verification gate:** cmd_provenance + cmd_ingest call verify_schema() → exit 5 if juridical_translations not deployed ✅
+- **Cascade delete:** `juridical_texts ON DELETE CASCADE` → rollback only needs to delete juridical_texts + ingestion_provenance rows ✅
 
-- **Type consistency:** `juridical_texts` row shape matches migration schema; chapter_path is text not enum (per migration); provenance_id is uuid foreign key.
+- **Placeholder scan:** TBD only on Phase 2 work (Arabic quality refresh, rule-level granularity, semantic embeddings) — those are explicitly deferred.
 
 ---
 
 ## Execution dependencies + blockers
 
-- Task 1 Step 2 (migration apply) requires operator-direct `supabase` CLI access OR explicit cc-scholar auth (same pattern as persist-mizan-ruling deploy this session).
-- Task 3 Steps 1-2 (data writes) require service-role key + ingestion_provenance row in place.
+- Task 1 Step 2 (migration apply) requires operator-direct `supabase` CLI access OR explicit cc-scholar auth. GATED on 2026-05-08T01:32:09Z window-close.
+- Task 3 Steps 1-2 (data writes) require: (a) migration applied; (b) service-role key; (c) ingestion_provenance row in place.
 - Task 4 (mizan_bot wire-in) does not block on data being ingested — code can land before data; if no rows match, lookup_fiqh returns empty results gracefully.
 - Task 5 smoke test requires bot restart after Task 4 commit.
+
+---
 
 ## Provenance
 
 This plan authored 2026-05-07 by cc-scholar per AL-BAYAN-003-AMEND-ENGLISH-FIRST-001 (strategic_decisions id 699, amended 2026-05-07 with license-verified-permissive + Q3-Q5 ratifications). Operator dropped source PDF at `docs/sources/safinat-al-najah-marbuqi-tr.pdf` (SHA `679404ac…ad491`). License posture verified via verbatim page-3 reproduction grant + al-inaam.com publisher tradition (sadaqah jariyah). cc-scholar's initial "almost certainly a typo" claim was the third substrate-assumed-not-verified failure of the session; corrected by operator pushback ("people translate books as sadaqah jariyah") and memorialized in `feedback_islamic_publishing_license.md`.
+
+**Schema mismatch self-correction (2026-04-30):** cc-scholar escalated to CAI (msg #1399) after discovering that `scripts/ingest_safinat_marbuqi.py` assumed an English-aware `juridical_texts` schema (`english_text`, `chapter_path`, `output_tier`, `provenance_id`) that does NOT match deployed state. Deployed migration `20260428194802_al_bayan_003_juridical_corpus.sql` has Arabic-only schema (`baab_or_section`, `arabic_text NOT NULL`, `arabic_text_sha256`, `ingestion_provenance_id`). CAI adopted Path B refined (new `juridical_translations` table) per strategic_decisions id 756 / CAI-RESP-136. cc-scholar confirmed 4 downstream asks (msg #1400): delete shadow file, create new migration, rewrite ingest script for two-step insert, update this plan. This was the 4th substrate-assumed-not-verified pattern of the session; CAI-RESP-136 meta-process amendment now requires information_schema query before any schema-dependent code.
