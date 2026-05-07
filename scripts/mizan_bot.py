@@ -271,15 +271,28 @@ def _extract_keyword_snippet(text: str, keywords: list, before: int = 500, after
     text_lower = text.lower()
     HEADING_ZONE = 250
 
+    def _find(kw_l: str, start: int = 0) -> int:
+        """Substring search with prefix-stem fallback for English verb suffixes.
+        FTS query routing stems via PostgreSQL websearch_to_tsquery, but snippet
+        anchoring uses literal substring matching; user-typed 'nullifies' must
+        match matn's 'Nullify'. If full keyword misses, try the first 5 chars
+        as a prefix stem (matches plurals, verb forms, hyphen-joined variants)."""
+        idx = text_lower.find(kw_l, start)
+        if idx >= 0:
+            return idx
+        if len(kw_l) >= 6:
+            return text_lower.find(kw_l[:5], start)
+        return -1
+
     best_idx = None
     for kw in keywords:
         kw_l = kw.lower()
-        idx = text_lower.find(kw_l)
+        idx = _find(kw_l)
         if idx < 0:
             continue
         if idx < HEADING_ZONE:
             # Look for a later occurrence past the heading zone.
-            later = text_lower.find(kw_l, HEADING_ZONE)
+            later = _find(kw_l, HEADING_ZONE)
             if later >= 0:
                 best_idx = later
                 break
@@ -292,7 +305,7 @@ def _extract_keyword_snippet(text: str, keywords: list, before: int = 500, after
         # No keyword matched outside heading zone; fall back to first match
         # anywhere (even if in heading) rather than empty snippet.
         for kw in keywords:
-            idx = text_lower.find(kw.lower())
+            idx = _find(kw.lower())
             if idx >= 0:
                 best_idx = idx
                 break
