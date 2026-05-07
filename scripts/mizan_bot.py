@@ -58,14 +58,37 @@ SURAH_NAMES = {
 }
 
 # AL-BAYAN-003-AMEND-ENGLISH-FIRST-001 / id 699 + CAI-RESP-136 / id 756 routing.
-# Retrieve-only echo of juridical_translations (English Safīnat al-Marbūqī).
-# C4 boundary: NO compose-layer synthesis from fiqh substrate. INV-7 paired-
-# scholar gate must clear before any synthesis. v0 returns matn passages
-# with attribution, never composes new rulings.
+# Two separate keyword sets:
+#  - RULING_KEYWORDS / RULING_PHRASES → scholar gate (block ruling-class queries
+#    that ask for fatwa-shaped answers). Original FIQH_KEYWORDS purpose.
+#  - FIQH_TOPIC_KEYWORDS → trigger juridical_translations retrieval (retrieve-only
+#    echo of Safīnat al-Marbūqī English). New v0 fiqh-substrate routing.
+#
+# These were merged into a single variable in 51db328 — caused fiqh-topic queries
+# (e.g. "what are the arkan of wudu") to trigger the scholar gate. Restoring
+# separation. C4 boundary unchanged: NO compose synthesis from fiqh substrate.
 
-FIQH_KEYWORDS = {
-    # Madhhab + general fiqh
-    "fiqh", "ruling", "madhhab", "madhab",
+RULING_KEYWORDS = {
+    "halal", "haram", "permissible", "ruling", "allowed", "forbidden",
+    "fard", "wajib", "makruh", "mustahab", "fatwa", "obligatory", "sinful",
+    "bid'ah", "bidah",
+}
+
+RULING_PHRASES = [
+    r"is\s+it\s+(halal|haram|permissible|allowed|forbidden)\s+to",
+    r"can\s+i\s+.+\s+in\s+islam",
+    r"ruling\s+on",
+    r"is\s+it\s+ok(ay)?\s+to",
+    r"am\s+i\s+allowed\s+to",
+    r"do\s+i\s+have\s+to",
+    r"what\s+is\s+the\s+punishment\s+for",
+    r"must\s+i",
+    r"is\s+it\s+permissible",
+]
+
+FIQH_TOPIC_KEYWORDS = {
+    # Madhhab + general fiqh terminology
+    "fiqh", "madhhab", "madhab",
     "shafii", "shafi'i", "shafi", "shaafi",
     "safinat", "safinah", "matn",
     # Worship topics covered in v0 ingestion (taharah / salah / zakah / siyam)
@@ -73,27 +96,38 @@ FIQH_KEYWORDS = {
     "ghusl", "tayammum", "ritual bath",
     "purity", "taharah", "tahara",
     "najasah", "najis", "impurity",
-    "salah", "salat", "salaah", "prayer",
+    "salah", "salat", "salaah",
     "adhan", "athan", "iqamah",
-    "rukn", "arkan", "pillar", "pillars",
+    "rukn", "arkan",
     "janazah", "funeral",
-    "jumʿah", "jumuah", "friday prayer",
-    "zakah", "zakat", "alms",
-    "saum", "sawm", "siyam", "fasting", "ramadan", "fast",
+    "jumʿah", "jumuah",
+    "zakah", "zakat",
+    "saum", "sawm", "siyam", "fasting", "ramadan",
     "iftar", "suhur", "kaffara", "kaffarah",
-    # NOT yet covered (hajj deferred to Phase 2 — keywords listed here so we
-    # know to gracefully respond "this is a hajj question; v0 corpus does
-    # not yet include hajj fiqh; defer to scholar"). Phase 2 follow-up.
-    # "hajj", "umrah", "ihram", "miqat", "tawaf",
+    # NOT yet covered (hajj deferred to Phase 2). Add here when ingestion lands:
+    # "hajj", "umrah", "ihram", "miqat", "tawaf"
 }
 
 
-def match_fiqh_query(text: str) -> bool:
-    """Detect Shafi'i fiqh keywords in query → trigger juridical_translations
-    retrieval. Returns True if query contains fiqh-class signal.
-    Note: hajj/umrah keywords NOT in set (deferred to Phase 2 ingestion)."""
+def match_ruling_query(text: str) -> bool:
+    """Detect ruling-class queries (asking for halal/haram judgment) → scholar gate."""
+    import re
     t = text.lower()
-    return any(kw in t for kw in FIQH_KEYWORDS)
+    if any(kw in t.split() for kw in RULING_KEYWORDS):
+        return True
+    for pattern in RULING_PHRASES:
+        if re.search(pattern, t):
+            return True
+    return False
+
+
+def match_fiqh_query(text: str) -> bool:
+    """Detect Shafi'i fiqh-topic keywords in query → trigger juridical_translations
+    retrieval. Topic-class queries (about wudu, salah, etc.) bypass the scholar gate
+    and surface matn passages for reference. Hajj keywords NOT in set (deferred
+    to Phase 2 ingestion)."""
+    t = text.lower()
+    return any(kw in t for kw in FIQH_TOPIC_KEYWORDS)
 
 
 def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
@@ -1434,17 +1468,20 @@ def main():
                     print("  -> /clear response sent")
                     continue
 
-                # Fiqh gate
-                word_set = set(text.lower().split())
-                if word_set & FIQH_KEYWORDS:
+                # Scholar gate — fires on ruling-class queries (halal/haram/fatwa)
+                # but NOT on fiqh-topic queries (wudu/salah/etc.). Topic queries
+                # route through juridical_translations retrieval downstream.
+                if match_ruling_query(text):
                     send_message(chat_id,
                         "⚠️ *Scholar Gate*\n\n"
                         "This question involves a fiqh ruling that requires qualified scholarly judgment. "
-                        "I can share relevant Quranic verses and commentary for context, but I cannot issue rulings.\n\n"
+                        "I can share relevant Quranic verses, hadith, and Shafi'i matn passages (Safīnat al-Najā) "
+                        "for context, but I cannot issue rulings.\n\n"
                         "Please consult a qualified scholar (mufti) for a definitive answer.\n\n"
-                        "_If you'd like, rephrase your question to explore the Quranic theme instead._"
+                        "_If you'd like, rephrase your question to explore the topic — e.g., "
+                        "'what does Safīnat say about X' rather than 'is X halal'._"
                     )
-                    print("  -> Fiqh gate triggered")
+                    print("  -> Scholar gate triggered (ruling-class query)")
                     continue
 
                 # Process question
