@@ -1645,6 +1645,30 @@ def main():
                                     "\n\n---\n\nSUPPLEMENTARY TAFSIR (combined current+prior topics):\n"
                                     + "\n\n".join(entries)
                                 )
+
+                        # Followup but with potential topic shift — re-run fiqh
+                        # substrate retrieval if the new query has fiqh keywords
+                        # so a new topic (e.g. fasting after wudu turn) surfaces
+                        # fresh juridical_translations context. Without this, the
+                        # bot reuses stale last_context and reports "matched data
+                        # didn't include the section" even when the substrate has it.
+                        if match_fiqh_query(text):
+                            fiqh_data = lookup_fiqh(text, limit=3)
+                            if fiqh_data["results"]:
+                                entries = []
+                                for hit in fiqh_data["results"]:
+                                    entries.append(
+                                        f"Source: {hit['source_work']}\n"
+                                        f"Chapter: {hit['baab']}\n"
+                                        f"Translator: {hit['translator']} ({hit['edition']})\n"
+                                        f"Tier: {hit['tier']}\n"
+                                        f"Passage:\n{hit['text']}"
+                                    )
+                                context += (
+                                    "\n\n---\n\nFIQH MATCHED PASSAGES (followup-fresh — Shafi'i matn; "
+                                    "RETRIEVE-ONLY echo per C4 + INV-7):\n\n"
+                                    + "\n\n---\n\n".join(entries)
+                                )
                     else:
                         print("  Gathering context...")
                         context = gather_context(text)
