@@ -155,8 +155,10 @@ FIQH_TERM_EXPANSIONS = {
     "adhan":    ["adhan"],           # English text uses transliteration
     "athan":    ["adhan"],
     "iqamah":   ["iqamah"],
-    "rukn":     ["pillar", "obligatory"],
-    "arkan":    ["pillars", "obligatory"],
+    "rukn":     ["pillar", "obligatory", "compulsory", "integrals"],
+    "arkan":    ["pillars", "obligatory", "compulsory", "integrals"],
+    "fard":     ["obligatory", "compulsory", "farḍ"],
+    "fardh":    ["obligatory", "compulsory"],
     "janazah":  ["funeral"],
     "jumʿah":   ["friday", "jumuah"],
     "jumuah":   ["friday"],
@@ -228,6 +230,11 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
 
     # For each translation hit, fetch the linked juridical_texts row to get
     # baab_or_section + arabic_text snippet for fuller attribution.
+    # Snippet extraction: find first occurrence of any expanded keyword in the
+    # full translation_text and return a window around it (500 chars before,
+    # 1500 chars after). Without this, the first 1500 chars of the chapter is
+    # almost always the chapter heading + first section, not the section the
+    # user actually asked about.
     results = []
     for r in rows:
         baab = "?"
@@ -239,15 +246,43 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
                     baab = texts[0].get("baab_or_section", "?")
         except Exception:
             pass
+        full_text = r.get("translation_text") or ""
+        snippet = _extract_keyword_snippet(full_text, words, before=500, after=1500)
         results.append({
             "baab": baab,
             "translator": r.get("translator_name", "?"),
             "source_work": r.get("translation_source_work", "?"),
             "edition": r.get("edition_label", ""),
-            "text": (r.get("translation_text") or "")[:1500],
+            "text": snippet,
             "tier": r.get("output_tier", "paraphrased"),
         })
     return {"results": results}
+
+
+def _extract_keyword_snippet(text: str, keywords: list, before: int = 500, after: int = 1500) -> str:
+    """Return a window around the FIRST occurrence of any keyword in text.
+    Walk keywords in priority order (the order from expand_fiqh_keywords already
+    has user's literal terms first, expansions after). Anchor on the first match.
+    Falls back to text[:before+after] if no keyword matches."""
+    if not text:
+        return ""
+    text_lower = text.lower()
+    best_idx = None
+    for kw in keywords:
+        idx = text_lower.find(kw.lower())
+        if idx >= 0:
+            best_idx = idx
+            break
+    if best_idx is None:
+        return text[:before + after]
+    start = max(0, best_idx - before)
+    end = min(len(text), best_idx + after)
+    snippet = text[start:end]
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(text):
+        snippet = snippet + "…"
+    return snippet
 
 
 # --- Hadith collection aliases (built once at module load) ---
