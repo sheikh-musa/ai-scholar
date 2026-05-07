@@ -57,8 +57,97 @@ SURAH_NAMES = {
     111:"Al-Masad",112:"Al-Ikhlas",113:"Al-Falaq",114:"An-Nas",
 }
 
-FIQH_KEYWORDS = {"halal", "haram", "permissible", "ruling", "allowed", "forbidden",
-                  "fard", "wajib", "makruh", "mustahab", "fatwa"}
+# AL-BAYAN-003-AMEND-ENGLISH-FIRST-001 / id 699 + CAI-RESP-136 / id 756 routing.
+# Retrieve-only echo of juridical_translations (English Safīnat al-Marbūqī).
+# C4 boundary: NO compose-layer synthesis from fiqh substrate. INV-7 paired-
+# scholar gate must clear before any synthesis. v0 returns matn passages
+# with attribution, never composes new rulings.
+
+FIQH_KEYWORDS = {
+    # Madhhab + general fiqh
+    "fiqh", "ruling", "madhhab", "madhab",
+    "shafii", "shafi'i", "shafi", "shaafi",
+    "safinat", "safinah", "matn",
+    # Worship topics covered in v0 ingestion (taharah / salah / zakah / siyam)
+    "wudu", "wuduʾ", "ablution",
+    "ghusl", "tayammum", "ritual bath",
+    "purity", "taharah", "tahara",
+    "najasah", "najis", "impurity",
+    "salah", "salat", "salaah", "prayer",
+    "adhan", "athan", "iqamah",
+    "rukn", "arkan", "pillar", "pillars",
+    "janazah", "funeral",
+    "jumʿah", "jumuah", "friday prayer",
+    "zakah", "zakat", "alms",
+    "saum", "sawm", "siyam", "fasting", "ramadan", "fast",
+    "iftar", "suhur", "kaffara", "kaffarah",
+    # NOT yet covered (hajj deferred to Phase 2 — keywords listed here so we
+    # know to gracefully respond "this is a hajj question; v0 corpus does
+    # not yet include hajj fiqh; defer to scholar"). Phase 2 follow-up.
+    # "hajj", "umrah", "ihram", "miqat", "tawaf",
+}
+
+
+def match_fiqh_query(text: str) -> bool:
+    """Detect Shafi'i fiqh keywords in query → trigger juridical_translations
+    retrieval. Returns True if query contains fiqh-class signal.
+    Note: hajj/umrah keywords NOT in set (deferred to Phase 2 ingestion)."""
+    t = text.lower()
+    return any(kw in t for kw in FIQH_KEYWORDS)
+
+
+def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
+    """Query juridical_translations via PostgREST ILIKE.
+
+    Phase 2 would swap to a search_juridical_semantic RPC once embeddings
+    populate (per EMBED_PIPELINE_v02). v0 uses ILIKE on translation_text
+    for FTS-shape matching.
+
+    Returns: {results: [{baab, translator, text, source_work, ...}]}
+    """
+    # Pull the most-relevant rows by keyword presence in translation_text.
+    # ILIKE pattern: any of top-3 keywords appears.
+    words = [w for w in keywords_query.lower().split() if w not in STOP_WORDS and len(w) > 3]
+    if not words:
+        return {"results": []}
+    # PostgREST 'or' syntax for ILIKE OR
+    or_clause = "or=(" + ",".join(f"translation_text.ilike.*{w}*" for w in words[:3]) + ")"
+    try:
+        # Direct PostgREST GET; supabase_get already in this file but doesn't
+        # support 'or=' easily — build URL manually
+        path = (
+            "juridical_translations?select=translation_text,page_start,page_end,"
+            "edition_label,translator_name,translation_source_work,output_tier,"
+            "juridical_text_id&"
+            + or_clause + f"&limit={limit}"
+        )
+        rows = supabase_get(path)
+    except Exception:
+        return {"results": []}
+
+    # For each translation hit, fetch the linked juridical_texts row to get
+    # baab_or_section + arabic_text snippet for fuller attribution.
+    results = []
+    for r in rows:
+        baab = "?"
+        try:
+            jt_id = r.get("juridical_text_id")
+            if jt_id:
+                texts = supabase_get(f"juridical_texts?id=eq.{jt_id}&select=baab_or_section,author_name,text_name")
+                if texts:
+                    baab = texts[0].get("baab_or_section", "?")
+        except Exception:
+            pass
+        results.append({
+            "baab": baab,
+            "translator": r.get("translator_name", "?"),
+            "source_work": r.get("translation_source_work", "?"),
+            "edition": r.get("edition_label", ""),
+            "text": (r.get("translation_text") or "")[:1500],
+            "tier": r.get("output_tier", "paraphrased"),
+        })
+    return {"results": results}
+
 
 # --- Hadith collection aliases (built once at module load) ---
 # Maps lowercase alias strings → collection_id UUID.
@@ -1045,6 +1134,29 @@ def gather_context(question):
                 label = "HADITH SEARCH" if wants_hadith else "RELATED HADITHS"
                 context_parts.append(f"{label}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 
+    # Shafi'i fiqh substrate — retrieve-only echo per C4 + INV-7 gate.
+    # Triggers when query contains fiqh keywords (taharah/salah/zakah/siyam
+    # class). Hajj is deferred Phase 2 (keywords NOT in FIQH_KEYWORDS).
+    if match_fiqh_query(question) and _ctx_size(context_parts) < MAX_CONTEXT:
+        fiqh_data = lookup_fiqh(" ".join(words[:4]), limit=3)
+        if fiqh_data["results"]:
+            entries = []
+            for hit in fiqh_data["results"]:
+                entries.append(
+                    f"Source: {hit['source_work']}\n"
+                    f"Chapter: {hit['baab']}\n"
+                    f"Translator: {hit['translator']} ({hit['edition']})\n"
+                    f"Tier: {hit['tier']}\n"
+                    f"Passage:\n{hit['text']}"
+                )
+            context_parts.append(
+                "FIQH MATCHED PASSAGES (Shafi'i matn — Safīnat al-Najā / al-Marbūqī tr.; "
+                "RETRIEVE-ONLY echo. Compose-layer synthesis FORBIDDEN per C4 + INV-7 "
+                "paired-scholar gate. Bot returns matn passages verbatim with attribution; "
+                "user must consult qualified Shafi'i scholar for application to their case.):\n\n" +
+                "\n\n---\n\n".join(entries)
+            )
+
     return "\n\n---\n\n".join(context_parts) if context_parts else "No relevant data found in the database."
 
 
@@ -1079,6 +1191,11 @@ Here is the relevant data from the Quran, tafsir, and hadith database:
 RULES:
 - Use ONLY the provided data to answer. Do not make up verses, tafsir, or hadiths.
 - NEVER issue fiqh rulings.
+- When citing Shafi'i fiqh substrate (Safīnat al-Najā passages from juridical_translations),
+  return the matn passage VERBATIM with full attribution: "Safīnat al-Najā ({Chapter}, al-Marbūqī tr.,
+  al-inaam.com 2009)". Do NOT synthesize a new ruling from these passages. Append:
+  "This passage is from the Shafi'i primer for reference; consult a qualified scholar for
+  application to your specific situation."
 - Keep response concise (Telegram format, under 3000 chars).
 - Include Arabic text when showing Quranic verses.
 - End with a reflective question (practice off-ramp) to move knowledge toward action.
