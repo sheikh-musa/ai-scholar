@@ -130,6 +130,63 @@ def match_fiqh_query(text: str) -> bool:
     return any(kw in t for kw in FIQH_TOPIC_KEYWORDS)
 
 
+FIQH_TERM_EXPANSIONS = {
+    # transliterated Arabic → English equivalents found in al-Marbuqi translation.
+    # The al-Marbuqi tr. uses English worship terms; literal user keywords like
+    # "wudu" or "arkan" miss without expansion. ILIKE searches use BOTH the
+    # original transliteration AND each English equivalent.
+    "wudu":     ["ablution"],
+    "wuduʾ":    ["ablution"],
+    "ghusl":    ["ritual bath", "bath"],
+    "tayammum": ["dry ablution", "tayammum"],
+    "taharah":  ["purity", "purification"],
+    "tahara":   ["purity", "purification"],
+    "najasah":  ["impurity", "filth"],
+    "najis":    ["impurity"],
+    "salah":    ["prayer", "salah"],
+    "salat":    ["prayer"],
+    "salaah":   ["prayer"],
+    "adhan":    ["call to prayer", "adhan"],
+    "athan":    ["call to prayer"],
+    "iqamah":   ["iqamah"],
+    "rukn":     ["pillar", "obligatory act"],
+    "arkan":    ["pillars", "obligatory acts"],
+    "janazah":  ["funeral"],
+    "jumʿah":   ["friday prayer", "jumuah"],
+    "jumuah":   ["friday prayer"],
+    "zakah":    ["zakat", "alms", "poor-due"],
+    "zakat":    ["alms", "poor-due"],
+    "saum":     ["fasting", "fast"],
+    "sawm":     ["fasting", "fast"],
+    "siyam":    ["fasting"],
+    "ramadan":  ["ramadan"],
+    "iftar":    ["breaking the fast", "breaking fast"],
+    "suhur":    ["pre-dawn meal"],
+    "kaffara":  ["expiation"],
+    "kaffarah": ["expiation"],
+    "shafii":   ["shafi"],
+    "shafi'i":  ["shafi"],
+    "madhhab":  ["school of law"],
+    "fiqh":     ["jurisprudence"],
+}
+
+
+def expand_fiqh_keywords(words: list) -> list:
+    """For each transliterated Arabic term, also include English equivalents.
+    Returns a deduped list, original words first then expansions."""
+    out = []
+    seen = set()
+    for w in words:
+        if w not in seen:
+            seen.add(w)
+            out.append(w)
+        for alt in FIQH_TERM_EXPANSIONS.get(w, []):
+            if alt not in seen:
+                seen.add(alt)
+                out.append(alt)
+    return out
+
+
 def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
     """Query juridical_translations via PostgREST ILIKE.
 
@@ -137,15 +194,19 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
     populate (per EMBED_PIPELINE_v02). v0 uses ILIKE on translation_text
     for FTS-shape matching.
 
+    Keyword expansion: al-Marbuqi tr. uses English terms (ablution, pillars,
+    prayer) not transliterated Arabic. expand_fiqh_keywords adds English
+    equivalents so user queries with "wudu" or "arkan" hit "ablution" / "pillars".
+
     Returns: {results: [{baab, translator, text, source_work, ...}]}
     """
     # Pull the most-relevant rows by keyword presence in translation_text.
-    # ILIKE pattern: any of top-3 keywords appears.
-    words = [w for w in keywords_query.lower().split() if w not in STOP_WORDS and len(w) > 3]
-    if not words:
+    raw_words = [w for w in keywords_query.lower().split() if w not in STOP_WORDS and len(w) > 3]
+    if not raw_words:
         return {"results": []}
-    # PostgREST 'or' syntax for ILIKE OR
-    or_clause = "or=(" + ",".join(f"translation_text.ilike.*{w}*" for w in words[:3]) + ")"
+    words = expand_fiqh_keywords(raw_words)
+    # PostgREST 'or' syntax for ILIKE OR — search up to 6 expanded terms.
+    or_clause = "or=(" + ",".join(f"translation_text.ilike.*{w}*" for w in words[:6]) + ")"
     try:
         # Direct PostgREST GET; supabase_get already in this file but doesn't
         # support 'or=' easily — build URL manually
