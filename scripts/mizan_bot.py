@@ -206,6 +206,12 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
     prayer) not transliterated Arabic. expand_fiqh_keywords adds English
     equivalents so user queries with "wudu" or "arkan" hit "ablution" / "pillars".
 
+    Density ranking: PostgREST 'or' returns rows in row order (no relevance
+    scoring). We over-fetch (all 5 buckets), score each by total keyword-hit
+    count in the full text, return top-N by score. Without this, "fasting
+    nullifiers" returns Muqaddimah/Taharah ahead of Siyam because they appear
+    earlier in row order and Siyam ranks below the limit cutoff.
+
     Returns: {results: [{baab, translator, text, source_work, ...}]}
     """
     # Pull the most-relevant rows by keyword presence in translation_text.
@@ -214,6 +220,9 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
         return {"results": []}
     words = expand_fiqh_keywords(raw_words)
     # PostgREST 'or' syntax for ILIKE OR — search up to 6 expanded terms.
+    # Fetch up to 10 rows (the full corpus has only 5 chapters anyway) so we
+    # can rank by density rather than rely on row-order cutoff.
+    fetch_limit = max(10, limit * 3)
     or_clause = "or=(" + ",".join(f"translation_text.ilike.*{w}*" for w in words[:6]) + ")"
     try:
         # Direct PostgREST GET; supabase_get already in this file but doesn't
@@ -222,9 +231,16 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
             "juridical_translations?select=translation_text,page_start,page_end,"
             "edition_label,translator_name,translation_source_work,output_tier,"
             "juridical_text_id&"
-            + or_clause + f"&limit={limit}"
+            + or_clause + f"&limit={fetch_limit}"
         )
         rows = supabase_get(path)
+        # Density rank: count total occurrences of any expanded keyword in
+        # the row's full text. Higher count = more topically relevant chapter.
+        def _density(row):
+            full = (row.get("translation_text") or "").lower()
+            return sum(full.count(w.lower()) for w in words)
+        rows.sort(key=_density, reverse=True)
+        rows = rows[:limit]
     except Exception:
         return {"results": []}
 
