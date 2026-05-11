@@ -1,0 +1,51 @@
+surah,ayah_start,ayah_end,bucket,rationale
+96,1,5,early_meccan,first revelation — iqra' opening
+73,1,10,early_meccan,muzzammil mantle verses
+74,1,10,early_meccan,muddathir mantle verses
+1,1,7,early_meccan,al-fatiha — short surah structural reference
+112,1,4,early_meccan,al-ikhlas — pure tawhid creed
+103,1,3,early_meccan,al-asr — time + truth
+108,1,3,early_meccan,al-kawthar — shortest surah
+100,1,11,early_meccan,al-adiyat — eschatology + horses
+88,1,10,early_meccan,al-ghashiyah — overwhelming day
+81,1,14,early_meccan,al-takwir — sun darkening sequence
+82,1,19,early_meccan,al-infitar — heavens splitting
+97,1,5,early_meccan,laylat al-qadr — night of decree
+99,1,8,early_meccan,al-zilzal — earthquake
+102,1,8,early_meccan,al-takathur — abundance distraction
+109,1,6,early_meccan,al-kafirun — separation creed
+5,3,3,late_medinan,perfection of religion
+5,6,6,late_medinan,wudu ayah — ahkam ablution
+5,90,91,late_medinan,intoxicants prohibition
+2,282,282,late_medinan,debt verse — longest ayah
+2,255,255,late_medinan,ayat al-kursi — creedal central
+3,7,7,late_medinan,muhkam vs mutashabih
+24,31,31,late_medinan,modesty ahkam
+33,35,35,late_medinan,gender-paired virtues
+49,11,12,late_medinan,etiquette ahkam
+49,13,13,late_medinan,peoples and tribes — anti-tribalism
+60,8,9,late_medinan,non-aggressor relations
+4,34,34,late_medinan,qiwama — gender ahkam
+4,11,11,late_medinan,inheritance ahkam
+9,5,5,late_medinan,sword verse — context-paired with 9:6
+110,1,3,late_medinan,al-nasr — final revelation per Bukhari (Hajjat al-Wada')
+2,178,178,ahkam_heavy,qisas — retributive justice
+2,183,185,ahkam_heavy,siyam — fasting prescription
+2,196,196,ahkam_heavy,hajj exemption
+2,228,228,ahkam_heavy,iddah waiting period
+2,233,233,ahkam_heavy,radaa — breastfeeding period
+4,3,3,ahkam_heavy,polygyny conditions
+4,23,23,ahkam_heavy,mahram list
+5,38,38,ahkam_heavy,sariqah — theft hadd
+24,2,2,ahkam_heavy,zina hadd
+65,1,2,ahkam_heavy,talaq — divorce ahkam
+12,23,25,parable_historical,yusuf — temptation arc
+12,50,53,parable_historical,yusuf — vindication arc
+18,60,65,parable_historical,khidr — meeting arc
+18,66,72,parable_historical,khidr — ship + boy
+18,73,78,parable_historical,khidr — wall + departure
+18,79,82,parable_historical,khidr — explanation arc
+28,7,13,parable_historical,musa infant returned to mother
+21,69,69,parable_historical,ibrahim cool fire
+19,16,22,parable_historical,maryam annunciation
+3,43,47,parable_historical,maryam + yahya birth context

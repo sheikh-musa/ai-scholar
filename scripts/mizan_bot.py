@@ -22,6 +22,12 @@ import sys
 import os
 import signal
 
+# Phase 2 semantic-first retrieval for fiqh substrate.
+# Architectural pivot per CAI-PROCESS-GLUE-AUDIT-MIZANBOT-001 (id 870) hybrid
+# ruling — lifts the freeze marker once shipped + validated.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fiqh_semantic  # noqa: E402
+
 # --- Config ---
 BOT_TOKEN = os.environ.get("MIZAN_BOT_TOKEN", "")
 SUPABASE_URL = "https://tscuymavysscrvoberrr.supabase.co"
@@ -1327,16 +1333,28 @@ def gather_context(question):
     # Triggers when query contains fiqh keywords (taharah/salah/zakah/siyam
     # class). Hajj is deferred Phase 2 (keywords NOT in FIQH_KEYWORDS).
     if match_fiqh_query(question) and _ctx_size(context_parts) < MAX_CONTEXT:
-        fiqh_data = lookup_fiqh(" ".join(words[:4]), limit=3)
+        # Phase 2 semantic-first per CAI-PROCESS-GLUE-AUDIT-MIZANBOT-001
+        # hybrid ruling. FTS-fallback on encoder timeout / empty / unreachable.
+        try:
+            fiqh_data = fiqh_semantic.search_semantic(question, limit=3)
+        except Exception:
+            fiqh_data = {"results": []}
+        if not fiqh_data.get("results"):
+            fiqh_data = lookup_fiqh(" ".join(words[:4]), limit=3)
         if fiqh_data["results"]:
             entries = []
             for hit in fiqh_data["results"]:
+                # Truncate per-hit text to fit MAX_CONTEXT budget. Semantic
+                # path returns full chapter (PK-constrained 1 row per text);
+                # FTS path returns ~2000-char snippet from _extract_keyword_snippet.
+                # Phase 3 schema migration to per-chunk rows replaces this slice.
+                snippet = (hit.get("text") or "")[:2500]
                 entries.append(
                     f"Source: {hit['source_work']}\n"
                     f"Chapter: {hit['baab']}\n"
                     f"Translator: {hit['translator']} ({hit['edition']})\n"
                     f"Tier: {hit['tier']}\n"
-                    f"Passage:\n{hit['text']}"
+                    f"Passage:\n{snippet}"
                 )
             context_parts.append(
                 "FIQH MATCHED PASSAGES (Shafi'i matn — Safīnat al-Najā / al-Marbūqī tr.; "
