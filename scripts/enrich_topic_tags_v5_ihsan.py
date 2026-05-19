@@ -50,6 +50,20 @@ CLAUDE_ENV = {
 CHECKPOINT_PATH = Path(__file__).parent / ".v5_checkpoint.json"
 LOG_PATH = Path(__file__).parent / ".v5_log.jsonl"
 
+
+def checkpoint_path(worker_id=None):
+    """Worker-aware checkpoint path. Single-worker uses .v5_checkpoint.json;
+    multi-worker uses .v5_checkpoint.W{N}.json to avoid concurrent writes."""
+    if worker_id is None:
+        return CHECKPOINT_PATH
+    return CHECKPOINT_PATH.parent / f".v5_checkpoint.W{worker_id}.json"
+
+
+def log_path(worker_id=None):
+    if worker_id is None:
+        return LOG_PATH
+    return LOG_PATH.parent / f".v5_log.W{worker_id}.jsonl"
+
 # ---------------------------------------------------------------------------
 # Tafsir-style markers (shared definition with v4)
 # ---------------------------------------------------------------------------
@@ -156,22 +170,47 @@ def api_patch(table, row_id, data):
 # Checkpoint
 # ---------------------------------------------------------------------------
 
-def load_checkpoint():
-    if not CHECKPOINT_PATH.exists():
+def load_checkpoint(worker_id=None):
+    path = checkpoint_path(worker_id)
+    if not path.exists():
         return {"completed_ids": [], "started_at": None,
                 "stats": {"keep": 0, "retag": 0, "empty": 0, "succeeded": 0, "failed": 0,
                           "with_asbab": 0, "with_mutashabihat": 0}}
-    return json.loads(CHECKPOINT_PATH.read_text())
+    return json.loads(path.read_text())
 
 
-def save_checkpoint(cp):
+def save_checkpoint(cp, worker_id=None):
     cp["updated_at"] = datetime.now(timezone.utc).isoformat()
-    CHECKPOINT_PATH.write_text(json.dumps(cp, indent=2))
+    checkpoint_path(worker_id).write_text(json.dumps(cp, indent=2))
 
 
-def log_event(event):
+def load_peer_completed_ids(worker_id, num_workers):
+    """Read other workers' checkpoint files to avoid re-processing ayat
+    they've already done (e.g., when this worker resumes after a peer
+    completed some of its work range)."""
+    peers = set()
+    for w in range(num_workers):
+        if w == worker_id:
+            continue
+        peer = checkpoint_path(w)
+        if peer.exists():
+            try:
+                peers.update(json.loads(peer.read_text()).get("completed_ids", []))
+            except Exception:
+                pass
+    # Also include single-worker checkpoint (.v5_checkpoint.json) since the
+    # original single-worker run wrote 25 ayat there before we partitioned.
+    if CHECKPOINT_PATH.exists():
+        try:
+            peers.update(json.loads(CHECKPOINT_PATH.read_text()).get("completed_ids", []))
+        except Exception:
+            pass
+    return peers
+
+
+def log_event(event, worker_id=None):
     event["t"] = datetime.now(timezone.utc).isoformat()
-    with LOG_PATH.open("a") as f:
+    with log_path(worker_id).open("a") as f:
         f.write(json.dumps(event) + "\n")
 
 
@@ -386,15 +425,24 @@ def cmd_run(args):
     model = None
     if "--model" in args:
         model = args[args.index("--model") + 1]
+    worker_id = None
+    num_workers = 1
+    if "--worker-id" in args:
+        worker_id = int(args[args.index("--worker-id") + 1])
+    if "--num-workers" in args:
+        num_workers = int(args[args.index("--num-workers") + 1])
 
     print("=" * 60)
-    print(f"V5 Ihsan-grade enrichment — model={model or 'default'} resume={resume}")
+    suffix = f" worker={worker_id}/{num_workers}" if worker_id is not None else ""
+    print(f"V5 Ihsan-grade enrichment — model={model or 'default'} resume={resume}{suffix}")
     print("=" * 60)
 
-    cp = load_checkpoint()
+    cp = load_checkpoint(worker_id)
     if cp.get("started_at") is None:
         cp["started_at"] = datetime.now(timezone.utc).isoformat()
-    completed = set(cp.get("completed_ids", [])) if resume else set()
+    own_completed = set(cp.get("completed_ids", [])) if resume else set()
+    peer_completed = load_peer_completed_ids(worker_id, num_workers) if worker_id is not None else set()
+    completed = own_completed | peer_completed
 
     all_ayat = api_get_all("ayat?select=id,surah_number,ayah_number,arabic_text,english_translation,topic_tags&order=surah_number,ayah_number")
     position_map = build_position_map(all_ayat)
@@ -404,14 +452,17 @@ def cmd_run(args):
     for i, r in enumerate(all_ayat, start=1):
         if r["id"] in completed:
             continue
+        # Worker-partition: stripe by position modulo num_workers
+        if worker_id is not None and (i - 1) % num_workers != worker_id:
+            continue
         work.append((i, r))
 
-    print(f"Total: {len(all_ayat)} | Completed (resumed): {len(completed)}")
-    print(f"Work remaining: {len(work)}")
+    print(f"Total: {len(all_ayat)} | Own completed: {len(own_completed)} | Peer completed: {len(peer_completed)}")
+    print(f"Work remaining for this worker: {len(work)}")
     if limit:
         work = work[:limit]
         print(f"Limit applied: processing {len(work)}")
-    save_checkpoint(cp)
+    save_checkpoint(cp, worker_id)
 
     if not work:
         print("Nothing to do.")
@@ -421,7 +472,7 @@ def cmd_run(args):
         try:
             tafsir = api_get(f"tafsir_entries?ayah_id=eq.{ayah['id']}&select=scholar_name,english_text")
         except Exception as e:
-            log_event({"ayah_id": ayah["id"], "error": f"tafsir fetch: {e}"})
+            log_event({"ayah_id": ayah["id"], "error": f"tafsir fetch: {e}"}, worker_id)
             tafsir = []
 
         asbab_row = asbab_by_key.get((ayah["surah_number"], ayah["ayah_number"]))
@@ -431,7 +482,7 @@ def cmd_run(args):
         obj, _, err = call_claude(prompt, model=model)
 
         if obj is None or not isinstance(obj.get("tags"), list) or len(obj["tags"]) < 12:
-            log_event({"ayah_id": ayah["id"], "ref": f"{ayah['surah_number']}:{ayah['ayah_number']}", "error": err or "tags<12"})
+            log_event({"ayah_id": ayah["id"], "ref": f"{ayah['surah_number']}:{ayah['ayah_number']}", "error": err or "tags<12"}, worker_id)
             cp["stats"]["failed"] += 1
             print(f"  [{idx+1}/{len(work)}] {ayah['surah_number']}:{ayah['ayah_number']} ✗ {err}")
         else:
@@ -443,22 +494,23 @@ def cmd_run(args):
                     cp["stats"]["with_asbab"] += 1
                 if mut_refs:
                     cp["stats"]["with_mutashabihat"] += 1
-                completed.add(ayah["id"])
-                cp["completed_ids"] = list(completed)
+                own_completed.add(ayah["id"])
+                cp["completed_ids"] = list(own_completed)
                 marker_count = sum(1 for t in tags if has_tafsir_marker(t))
                 conf = obj.get("confidence", "?")
                 a_mark = "A" if asbab_row else "-"
                 m_mark = f"M{len(mut_refs)}" if mut_refs else "-"
-                print(f"  [{idx+1}/{len(work)}] {ayah['surah_number']}:{ayah['ayah_number']} ✓ {len(tags)} tags ({marker_count} markers, {len(tafsir)} tafsir, {a_mark}/{m_mark}, conf={conf})")
+                w_pfx = f"W{worker_id} " if worker_id is not None else ""
+                print(f"  {w_pfx}[{idx+1}/{len(work)}] {ayah['surah_number']}:{ayah['ayah_number']} ✓ {len(tags)} tags ({marker_count} markers, {len(tafsir)} tafsir, {a_mark}/{m_mark}, conf={conf})")
             except Exception as e:
-                log_event({"ayah_id": ayah["id"], "error": f"patch: {e}"})
+                log_event({"ayah_id": ayah["id"], "error": f"patch: {e}"}, worker_id)
                 cp["stats"]["failed"] += 1
 
         if (idx + 1) % 10 == 0:
-            save_checkpoint(cp)
+            save_checkpoint(cp, worker_id)
         time.sleep(0.5)
 
-    save_checkpoint(cp)
+    save_checkpoint(cp, worker_id)
     print(f"\n=== v5 Run complete ===")
     print(json.dumps(cp["stats"], indent=2))
     return 0
