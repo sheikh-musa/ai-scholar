@@ -2,10 +2,16 @@
 
 **Scope:** everything an operator (Musa) needs to do to take Al-Bayān from "code shipped in git" to "v0.1 live with audit substrate producing + consuming". All CC-side work is complete as of this document's date; what remains is operator actions against prod Supabase + infra.
 
-**Canonical state (2026-04-23):**
+**Canonical state (2026-04-23, original):**
 - Schema migrations authored + pushed to repo; **not yet applied to prod**.
 - Producer + consumer pipelines wired; **not yet exercised live**.
 - No external dependencies — every step can be run by Musa alone with existing credentials.
+
+**Verified state (2026-05-19, post-substrate-audit):**
+- ✅ Migrations 20260422_002 + 20260423_003 are **live in prod** (mizan_eval_* tables exist; ruling_audit_log + audit_key_registry + daily_attestations + mizan_retract_gate exist).
+- ✅ Producer side **active**: 27 rows in mizan_interactions, 27 matched rows in ruling_audit_log (hash-chain populated).
+- ❌ Consumer side **never fired**: audit_key_registry has 0 rows (signing key not generated), daily_attestations has 0 rows (nightly cron never run). The 27 chained rulings are accumulating un-attested.
+- ❌ Steps 2-4 + 6-7 of this runbook remain operator-action-required. The `audit_attestations` target is a **git repo** (`al-bayan/audit-attestations`), not a Postgres table — don't expect it as a `\d` result.
 
 ## Order of operations
 
@@ -21,8 +27,9 @@ supabase db push                                    # or apply each migration ex
 
 Migrations that need to apply (in order):
 - `20260419_001_search_tafsir_fts.sql` — already live (commit `5a13f74`).
-- `20260422_002_mizan_eval_pipeline.sql` — 5 MIZAN-EVAL tables + retract-gate.
-- `20260423_003_ruling_audit_log.sql` — INV-8 audit substrate + daily_attestations + audit_key_registry.
+- `20260422_002_mizan_eval_pipeline.sql` — 5 MIZAN-EVAL tables + retract-gate. **Applied to prod (verified 2026-05-19).**
+- `20260423_003_ruling_audit_log.sql` — INV-8 audit substrate + daily_attestations + audit_key_registry. **Applied to prod (verified 2026-05-19).**
+- `20260511_001_juridical_embeddings_per_chunk.sql` — per-chunk juridical embeddings. **Applied to prod (verified 2026-05-19; 57 backfilled rows across 5 baabs).**
 
 And for hifz-companion (separate migrations dir):
 - `20260422_005_hifz_protocol_v1.sql` — 6 FSRS tables + view + triggers + fsrs_audit_events + manzil_miss_events.
@@ -166,9 +173,9 @@ Both now send `telegram_id` to ask-scholar so the audit trail has stable (hashed
 
 ## Checklist
 
-- [ ] Migration `20260422_002` applied
-- [ ] Migration `20260423_003` applied
-- [ ] Migration `20260422_005` applied (hifz repo)
+- [x] Migration `20260422_002` applied (verified 2026-05-19)
+- [x] Migration `20260423_003` applied (verified 2026-05-19)
+- [ ] Migration `20260422_005` applied (hifz repo — out of cc-scholar visibility, check hifz-companion side)
 - [ ] Audit signing key generated + registered in `audit_key_registry`
 - [ ] `.well-known/audit-key.json` published
 - [ ] `al-bayan/audit-attestations` repo created + mirror set up
