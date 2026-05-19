@@ -1384,16 +1384,26 @@ def gather_context(question, meta=None):
                 context_parts.append(f"{label}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 
     # Shafi'i fiqh substrate — retrieve-only echo per C4 + INV-7 gate.
-    # Triggers when query contains fiqh keywords (taharah/salah/zakah/siyam
-    # class). Hajj is deferred Phase 2 (keywords NOT in FIQH_KEYWORDS).
-    if match_fiqh_query(question) and _ctx_size(context_parts) < MAX_CONTEXT:
+    # 2026-05-19: dropped match_fiqh_query() keyword gate. bge-m3 semantic
+    # embedding handles language code-switching (rukun solat → Malay → Salah),
+    # diacritic variance (nisab vs niṣāb), and synonym bridging natively.
+    # Keyword gate was producing false-negatives on every non-English-Arabic-
+    # transliteration query. Filtering at the rank threshold below now serves
+    # as the relevance gate (chunks with rank<0.45 are likely off-topic).
+    if _ctx_size(context_parts) < MAX_CONTEXT:
         # Phase 2 semantic-first per CAI-PROCESS-GLUE-AUDIT-MIZANBOT-001
         # hybrid ruling. FTS-fallback on encoder timeout / empty / unreachable.
         try:
             fiqh_data = fiqh_semantic.search_semantic(question, limit=3)
         except Exception:
             fiqh_data = {"results": []}
-        if not fiqh_data.get("results"):
+        # Rank threshold (validated 2026-05-19 against Tier 1 stress queries):
+        # 0.45 keeps the top-relevant baabs and excludes tangential bleed-in.
+        # Empirical rank floor for on-topic hits across sawm/wudu/zakat/salah
+        # queries was ~0.50; off-topic noise floor was ~0.40.
+        fiqh_data["results"] = [h for h in fiqh_data.get("results") or [] if h.get("rank", 0) >= 0.45]
+        if not fiqh_data["results"]:
+            # FTS fallback only when semantic returns nothing above threshold
             fiqh_data = lookup_fiqh(" ".join(words[:4]), limit=3)
         if fiqh_data["results"]:
             if meta is not None:

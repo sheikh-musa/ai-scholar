@@ -20,7 +20,7 @@ from typing import Optional
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://tscuymavysscrvoberrr.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY", "")
 ENCODER_URL = os.environ.get("ENCODER_URL", "http://100.104.36.27:8080")
-ENCODER_TIMEOUT_SEC = float(os.environ.get("ENCODER_TIMEOUT_SEC", "2.0"))
+ENCODER_TIMEOUT_SEC = float(os.environ.get("ENCODER_TIMEOUT_SEC", "5.0"))
 
 # bge-m3 ranks lexical overlap of transliterated Arabic terms strongly even
 # when semantically off-topic (e.g. "wājib" appears densely in the Salah
