@@ -22,6 +22,67 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SU
 ENCODER_URL = os.environ.get("ENCODER_URL", "http://100.104.36.27:8080")
 ENCODER_TIMEOUT_SEC = float(os.environ.get("ENCODER_TIMEOUT_SEC", "2.0"))
 
+# bge-m3 ranks lexical overlap of transliterated Arabic terms strongly even
+# when semantically off-topic (e.g. "wājib" appears densely in the Salah
+# imam-followership section, pulling "wajibat of sawm" to Salah rank-1).
+# Expand the query with English equivalents so bge-m3 centroids toward the
+# correct semantic chapter. Mapping is INTERSECTION-ONLY with the Marbuqi
+# translation vocabulary — terms that exist in juridical_translations text.
+QUERY_EXPANSIONS = {
+    "sawm": "fasting",
+    "siyam": "fasting",
+    "saum": "fasting",
+    "wudu": "ablution",
+    "wuduʾ": "ablution",
+    "wuḍūʾ": "ablution",
+    "ghusl": "ritual bath",
+    "tayammum": "dry ablution",
+    "salah": "prayer",
+    "ṣalāh": "prayer",
+    "salat": "prayer",
+    "zakah": "almsgiving",
+    "zakat": "almsgiving",
+    "zakāh": "almsgiving",
+    "hajj": "pilgrimage",
+    "ḥajj": "pilgrimage",
+    "iman": "faith creed",
+    "īmān": "faith creed",
+    "wajib": "obligation compulsory",
+    "wājib": "obligation compulsory",
+    "wajibat": "obligations compulsory",
+    "fard": "obligation farḍ",
+    "farḍ": "obligation farḍ",
+    "furud": "obligations integrals",
+    "furuḍ": "obligations integrals",
+    "sunnah": "recommended sunnah",
+    "arkan": "pillars integrals",
+    "arkān": "pillars integrals",
+    "mufṭirāt": "nullifiers breakers",
+    "mufsidat": "nullifiers breakers",
+    "nawāqiḍ": "nullifiers breakers",
+    "taharah": "purification cleanliness",
+    "ṭahārah": "purification cleanliness",
+    "najis": "impurity",
+    "najāsah": "impurity",
+}
+
+
+def _expand_query(q: str) -> str:
+    """Append English equivalents for transliterated Arabic terms. Original
+    query stays in place so lexical match is preserved if substrate uses
+    transliteration too.
+    """
+    if not q:
+        return q
+    extras: list = []
+    for tok in q.lower().split():
+        norm = tok.strip(".,;:!?\"'()[]")
+        if norm in QUERY_EXPANSIONS:
+            extras.append(QUERY_EXPANSIONS[norm])
+    if extras:
+        return q + " " + " ".join(extras)
+    return q
+
 
 def _http(method: str, url: str, payload=None, headers=None, timeout: float = 5.0):
     req = urllib.request.Request(url, method=method, headers=headers or {})
@@ -88,14 +149,14 @@ def search_semantic(query: str, limit: int = 3) -> dict:
     Returns: {"results": [{baab, translator, source_work, edition, text, tier, rank}, ...]}
     Empty results on encoder timeout, transport error, or zero corpus rows.
     """
-    qvec = _encode(query)
+    qvec = _encode(_expand_query(query))
     if qvec is None:
         return {"results": []}
 
     try:
         embeds = _supa(
             "GET",
-            "/rest/v1/juridical_embeddings?select=juridical_text_id,embedding",
+            "/rest/v1/juridical_embeddings?select=juridical_text_id,chunk_index,chunk_text,embedding",
         ) or []
     except Exception:
         return {"results": []}
@@ -103,7 +164,7 @@ def search_semantic(query: str, limit: int = 3) -> dict:
         return {"results": []}
 
     scored = sorted(
-        ((_cosine(qvec, row["embedding"]), row["juridical_text_id"]) for row in embeds),
+        ((_cosine(qvec, row["embedding"]), row) for row in embeds),
         key=lambda t: t[0],
         reverse=True,
     )[:limit]
@@ -111,7 +172,7 @@ def search_semantic(query: str, limit: int = 3) -> dict:
     if not scored:
         return {"results": []}
 
-    text_ids = [tid for _, tid in scored]
+    text_ids = list({row["juridical_text_id"] for _, row in scored})
     in_clause = "(" + ",".join(text_ids) + ")"
     juridical_texts = _supa(
         "GET",
@@ -121,14 +182,15 @@ def search_semantic(query: str, limit: int = 3) -> dict:
 
     translations = _supa(
         "GET",
-        f"/rest/v1/juridical_translations?select=juridical_text_id,translator_name,translation_source_work,translation_text,output_tier,edition_label&juridical_text_id=in.{in_clause}",
+        f"/rest/v1/juridical_translations?select=juridical_text_id,translator_name,translation_source_work,output_tier,edition_label&juridical_text_id=in.{in_clause}",
     ) or []
     by_text_id: dict = {}
     for tr in translations:
         by_text_id.setdefault(tr["juridical_text_id"], tr)
 
     results = []
-    for score, tid in scored:
+    for score, row in scored:
+        tid = row["juridical_text_id"]
         meta = text_meta.get(tid, {})
         tr = by_text_id.get(tid, {})
         results.append({
@@ -136,7 +198,8 @@ def search_semantic(query: str, limit: int = 3) -> dict:
             "translator": tr.get("translator_name", "?"),
             "source_work": tr.get("translation_source_work", meta.get("text_name", "?")),
             "edition": tr.get("edition_label", ""),
-            "text": tr.get("translation_text", ""),
+            "text": row.get("chunk_text", ""),
+            "chunk_index": row.get("chunk_index"),
             "tier": tr.get("output_tier", "paraphrased"),
             "rank": float(score),
         })

@@ -121,9 +121,10 @@ ai-scholar/
     │   ├── audit-verify/    ← third-party verification endpoint
     │   └── _shared/         ← query-type classifier, canonical JSON, persist-ruling
     └── migrations/
-        ├── 20260419_001_search_tafsir_fts.sql     (live)
-        ├── 20260422_002_mizan_eval_pipeline.sql   (NOT yet applied)
-        └── 20260423_003_ruling_audit_log.sql      (NOT yet applied)
+        ├── 20260419_001_search_tafsir_fts.sql              (applied)
+        ├── 20260422_002_mizan_eval_pipeline.sql             (applied)
+        ├── 20260423_003_ruling_audit_log.sql                (applied)
+        └── 20260511_001_juridical_embeddings_per_chunk.sql  (applied)
 ```
 
 ## Hard invariants (load-bearing)

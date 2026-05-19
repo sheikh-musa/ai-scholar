@@ -21,7 +21,7 @@ SUPABASE_URL = "https://tscuymavysscrvoberrr.supabase.co"
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
 ENCODER_URL = os.environ.get("ENCODER_URL", "http://100.104.36.27:8080")
 ENCODER_MODEL = "BAAI/bge-m3"
-CORPUS_VERSION = os.environ.get("CORPUS_VERSION", "marbuqi-safinat-2009-v1-chunked-1500-200")
+CORPUS_VERSION = os.environ.get("CORPUS_VERSION", "marbuqi-safinat-2009-v2-per-chunk-1500-200")
 CHUNK_CHARS = int(os.environ.get("CHUNK_CHARS", "1500"))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "200"))
 
@@ -102,14 +102,9 @@ def main():
         print(f"no translations for language={args.language}")
         return 0
 
-    # Chunk-then-mean-pool: bge-m3 attention scales quadratically with seq_len,
-    # so naive whole-chapter embedding OOMs. Schema PK is juridical_text_id alone
-    # (one row per text), so we cannot store per-chunk rows under current schema.
-    # Mitigation: chunk each text into 1500-char windows, embed each, then
-    # mean-pool the chunk vectors and re-normalize to produce a single
-    # document-level embedding per text. Loses fine-grained retrieval until
-    # Phase 3 schema migration to per-chunk rows; coarse-now is operator-chosen
-    # (option A, 2026-05-10).
+    # Per-chunk embedding (Phase 3 schema migration 20260511_001 enabled this).
+    # Each chunk → its own juridical_embeddings row with chunk_index + chunk_text.
+    # Composite PK (juridical_text_id, chunk_index) allows N rows per text.
     BATCH = int(os.environ.get("EMBED_BATCH", "8"))
     now = datetime.now(timezone.utc).isoformat()
     payloads = []
@@ -122,23 +117,21 @@ def main():
         chunk_vecs: list = []
         for i in range(0, len(chunks), BATCH):
             chunk_vecs.extend(embed_batch(chunks[i : i + BATCH]))
-        # Mean-pool + L2 renormalize.
-        dim = len(chunk_vecs[0])
-        pooled = [sum(v[j] for v in chunk_vecs) / len(chunk_vecs) for j in range(dim)]
-        norm = sum(x * x for x in pooled) ** 0.5
-        pooled = [x / norm for x in pooled] if norm else pooled
-        payloads.append({
-            "juridical_text_id": r["juridical_text_id"],
-            "embedding": pooled,
-            "embedding_model": ENCODER_MODEL,
-            "encoder_sha": enc_sha,
-            "corpus_version": CORPUS_VERSION,
-            "embedded_source_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            "source_token_count": len(text.split()),
-            "created_at": now,
-            "updated_at": now,
-        })
-        print(f"  pooled {len(chunks)} chunks -> 1 vector for {r['id'][:8]}")
+        for idx, (chunk, vec) in enumerate(zip(chunks, chunk_vecs)):
+            payloads.append({
+                "juridical_text_id": r["juridical_text_id"],
+                "chunk_index": idx,
+                "chunk_text": chunk,
+                "embedding": vec,
+                "embedding_model": ENCODER_MODEL,
+                "encoder_sha": enc_sha,
+                "corpus_version": CORPUS_VERSION,
+                "embedded_source_hash": hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
+                "source_token_count": len(chunk.split()),
+                "created_at": now,
+                "updated_at": now,
+            })
+        print(f"  {r['id'][:8]}: {len(chunks)} chunks queued")
 
     if args.dry_run:
         print("dry-run; first payload preview:")
