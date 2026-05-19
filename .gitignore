@@ -3,3 +3,15 @@
 .env
 .env.*
 *.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Supabase CLI cache
+supabase/.temp/
+
+# Enrichment pipeline local state (checkpoints, run logs, dotfile artifacts)
+scripts/.v4_*
+scripts/.v5_*
+scripts/.probe_*
