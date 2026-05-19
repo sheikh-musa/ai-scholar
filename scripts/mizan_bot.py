@@ -37,6 +37,47 @@ CLAUDE_PATH = os.path.expanduser("~/.local/bin/claude")
 # AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135
 PERSIST_FUNCTION_URL = SUPABASE_URL + "/functions/v1/persist-mizan-ruling"
 
+
+class RetrievalMeta:
+    """Threads retrieval IDs through gather_context → persist_emission so the
+    mizan_interactions audit row carries the actual passages the bot grounded
+    on, per F-2 (tafsir-defense-funnel) and INV-8 (audit substrate).
+
+    matched_passage_id: top tafsir hit's ayah_id (None if no tafsir FTS match).
+    retrieval_ids: union of all retrieval row IDs (tafsir ayah_id / juridical_text_id /
+    hadith id) in encounter order, deduplicated.
+    """
+    def __init__(self):
+        self.matched_passage_id = None
+        self._ids = []
+        self._seen = set()
+
+    def _add(self, rid):
+        if not rid or rid in self._seen:
+            return
+        self._seen.add(rid)
+        self._ids.append(rid)
+
+    def add_tafsir_hits(self, hits):
+        for h in hits or []:
+            rid = h.get("ayah_id")
+            if rid:
+                if self.matched_passage_id is None:
+                    self.matched_passage_id = rid
+                self._add(rid)
+
+    def add_juridical_hits(self, hits):
+        for h in hits or []:
+            self._add(h.get("id"))
+
+    def add_hadith_hits(self, hits):
+        for h in hits or []:
+            self._add(h.get("id"))
+
+    @property
+    def retrieval_ids(self):
+        return list(self._ids)
+
 SURAH_NAMES = {
     1:"Al-Fatihah",2:"Al-Baqarah",3:"Aal-Imran",4:"An-Nisa",5:"Al-Ma'idah",
     6:"Al-An'am",7:"Al-A'raf",8:"Al-Anfal",9:"At-Tawbah",10:"Yunus",
@@ -254,8 +295,8 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
     results = []
     for r in rows:
         baab = "?"
+        jt_id = r.get("juridical_text_id")
         try:
-            jt_id = r.get("juridical_text_id")
             if jt_id:
                 texts = supabase_get(f"juridical_texts?id=eq.{jt_id}&select=baab_or_section,author_name,text_name")
                 if texts:
@@ -265,6 +306,7 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
         full_text = r.get("translation_text") or ""
         snippet = _extract_keyword_snippet(full_text, expanded, before=500, after=1500)
         results.append({
+            "id": jt_id,                # F-2: juridical_text_id for retrieval_ids audit
             "baab": baab,
             "translator": r.get("translator_name", "?"),
             "source_work": r.get("translation_source_work", "?"),
@@ -826,6 +868,7 @@ def search_tafsir(keywords, limit=5):
         if passage.startswith("[Arabic tafsir"):
             continue
         results.append({
+            "ayah_id": r["ayah_id"],   # F-2: thread retrieval ID through to audit row
             "surah": r["surah_number"],
             "ayah": r["ayah_number"],
             "arabic": r["arabic_text"],
@@ -1082,7 +1125,8 @@ def search_hadith_fts_v2(keywords, limit=5, preferred_collection_id=None,
             rid = r.get("id") or r.get("hadith_number", "")
             if rid not in seen_ids:
                 seen_ids.add(rid)
-                r.pop("id", None)
+                # Keep id in result for F-2 audit threading (previously popped to
+                # hide from LLM context; UUID is fine for Claude to see).
                 all_results.append(r)
     else:
         # OR fallback — use existing search_hadith_fts logic
@@ -1109,7 +1153,7 @@ def search_hadith_fts_v2(keywords, limit=5, preferred_collection_id=None,
                 rid = r.get("id") or r.get("hadith_number", "")
                 if rid not in seen_ids:
                     seen_ids.add(rid)
-                    r.pop("id", None)
+                    # Keep id (same rationale as AND-branch above)
                     all_results.append(r)
         except Exception as e:
             print(f"  Narrator search failed ({e})")
@@ -1150,8 +1194,14 @@ MAX_CONTEXT = 25000  # chars — keeps Claude prompt lean
 def _ctx_size(parts):
     return sum(len(p) for p in parts)
 
-def gather_context(question):
-    """Analyze the question and gather relevant data from Quran + hadith."""
+def gather_context(question, meta=None):
+    """Analyze the question and gather relevant data from Quran + hadith.
+
+    If `meta` (RetrievalMeta) is provided, retrieval row IDs are accumulated
+    into it for F-2 audit-row threading. Backward-compatible: callers that
+    don't pass meta still get a string return and the function behaves as
+    before.
+    """
     import re
     context_parts = []
     q = question.lower()
@@ -1299,6 +1349,8 @@ def gather_context(question):
         if _ctx_size(context_parts) < MAX_CONTEXT:
             tdata = search_tafsir(fts_query, limit=5)
             if tdata["results"]:
+                if meta is not None:
+                    meta.add_tafsir_hits(tdata["results"])
                 entries = []
                 for hit in tdata["results"]:
                     entries.append(
@@ -1326,6 +1378,8 @@ def gather_context(question):
                 mode="auto",
             )
             if data["results"]:
+                if meta is not None:
+                    meta.add_hadith_hits(data["results"])
                 label = "HADITH SEARCH" if wants_hadith else "RELATED HADITHS"
                 context_parts.append(f"{label}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 
@@ -1342,6 +1396,8 @@ def gather_context(question):
         if not fiqh_data.get("results"):
             fiqh_data = lookup_fiqh(" ".join(words[:4]), limit=3)
         if fiqh_data["results"]:
+            if meta is not None:
+                meta.add_juridical_hits(fiqh_data["results"])
             entries = []
             for hit in fiqh_data["results"]:
                 # Truncate per-hit text to fit MAX_CONTEXT budget. Semantic
@@ -1448,18 +1504,24 @@ Respond directly to the user's question:"""
 
 
 # --- Persistence helper (AL-BAYAN-COMPOSE-001 / CAI-RESP-135) ---
-def persist_emission(chat_id, query_text, response_text, retrieval_ids=None):
+def persist_emission(chat_id, query_text, response_text, retrieval_ids=None, matched_passage_id=None):
     """POST to persist-mizan-ruling Edge Function.
 
     Fail-soft: log on error, never raise. Bot's user-facing UX must not break
     if persistence is unavailable. Per CAI-RESP-135, governance integrity is
     critical but bot responsiveness is not negotiable mid-conversation.
+
+    F-2 (tafsir-defense-funnel): retrieval_ids carries the union of every
+    retrieval row ID that grounded the response (tafsir ayah_ids, juridical_text_ids,
+    hadith ids). matched_passage_id is the top tafsir hit's ayah_id when
+    search_tafsir_fts returned ≥1 row, else null.
     """
     payload = {
         "telegram_id": chat_id,
         "query_text": query_text[:2000],   # keep request small
         "response_text": response_text[:5000],
         "retrieval_ids": retrieval_ids or [],
+        "matched_passage_id": matched_passage_id,
     }
     key = SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY
     data = json.dumps(payload).encode("utf-8")
@@ -1676,6 +1738,8 @@ def main():
                     # Detect follow-up
                     followup = is_followup(text, session)
 
+                    retrieval_meta = RetrievalMeta()
+
                     if followup and session["last_context"]:
                         print("  Follow-up detected, reusing context...")
                         context = session["last_context"]
@@ -1696,6 +1760,7 @@ def main():
                             if search_kw:
                                 extra = search_hadith_fts(search_kw, limit=5)
                                 if extra["results"]:
+                                    retrieval_meta.add_hadith_hits(extra["results"])
                                     context += f"\n\n---\n\nADDITIONAL HADITH SEARCH:\n{json.dumps(extra, ensure_ascii=False, indent=2)}"
                         elif any(w in q_lower for w in ("verse", "ayah", "quran")):
                             search_kw = combined_keywords if combined_keywords else (session.get("last_topics") or [])[:4]
@@ -1710,6 +1775,7 @@ def main():
                             fts_q = " OR ".join(combined_keywords[:4])
                             extra = search_tafsir(fts_q, limit=3)
                             if extra["results"]:
+                                retrieval_meta.add_tafsir_hits(extra["results"])
                                 entries = []
                                 for hit in extra["results"]:
                                     entries.append(
@@ -1731,6 +1797,7 @@ def main():
                         if match_fiqh_query(text):
                             fiqh_data = lookup_fiqh(text, limit=3)
                             if fiqh_data["results"]:
+                                retrieval_meta.add_juridical_hits(fiqh_data["results"])
                                 entries = []
                                 for hit in fiqh_data["results"]:
                                     entries.append(
@@ -1747,7 +1814,7 @@ def main():
                                 )
                     else:
                         print("  Gathering context...")
-                        context = gather_context(text)
+                        context = gather_context(text, meta=retrieval_meta)
 
                     print("  Asking Claude...")
                     send_typing(chat_id)
@@ -1768,7 +1835,13 @@ def main():
 
                     # AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135 — persist after send,
                     # fail-soft so persistence outages don't block user replies.
-                    persist_emission(chat_id, text, answer)
+                    # F-2 (tafsir-defense-funnel): thread matched_passage_id + retrieval_ids
+                    # collected from this turn's retrievals so the audit row reflects reality.
+                    persist_emission(
+                        chat_id, text, answer,
+                        retrieval_ids=retrieval_meta.retrieval_ids,
+                        matched_passage_id=retrieval_meta.matched_passage_id,
+                    )
                 except Exception as msg_err:
                     # Per-message exception handler — don't leave user hanging.
                     err_short = type(msg_err).__name__

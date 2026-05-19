@@ -194,6 +194,7 @@ def search_semantic(query: str, limit: int = 3) -> dict:
         meta = text_meta.get(tid, {})
         tr = by_text_id.get(tid, {})
         results.append({
+            "id": tid,                # F-2: juridical_text_id for retrieval_ids audit
             "baab": meta.get("baab_or_section", "?"),
             "translator": tr.get("translator_name", "?"),
             "source_work": tr.get("translation_source_work", meta.get("text_name", "?")),
