@@ -323,8 +323,18 @@ def _is_throttle_error(stderr_text: str, returncode: int = 1) -> bool:
     return False
 
 
-def call_claude(prompt, timeout=120, max_throttle_retries=4, model=None):
-    """Call claude -p with optional model override, throttle-aware backoff."""
+def call_claude(prompt, timeout=120, max_throttle_retries=12, model=None, save_cp_fn=None):
+    """Call claude -p with optional model override, throttle-aware backoff.
+
+    Backoff schedule (calibrated for Max-plan 4h rolling window — 5-hour
+    rolling cap with up to ~3h+ wait when window is exhausted):
+      60s, 120s, 240s, 480s, 960s, 1800s, 1800s, 1800s, 1800s, 1800s, 1800s, 1800s
+    Total max wait ≈ 4.3h (covers 4h-window reset + safety margin).
+
+    save_cp_fn (optional): called before each backoff sleep ≥ 600s. Lets
+    workers persist progress before long sleeps so a kill / reboot during
+    a window-exhausted backoff doesn't lose the last batch of ayat.
+    """
     cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "text"]
     if model:
         cmd.extend(["--model", model])
@@ -337,8 +347,17 @@ def call_claude(prompt, timeout=120, max_throttle_retries=4, model=None):
         if result.returncode != 0:
             err = f"returncode={result.returncode}: {result.stderr[:200]}"
             if _is_throttle_error(result.stderr, result.returncode) and attempt < max_throttle_retries:
-                backoff = 60 * (2 ** attempt)
+                # Cap each attempt's wait at 30 min. After exponential climb
+                # plateaus at the cap, subsequent attempts just re-wait 30 min,
+                # giving long total coverage without unbounded sleeps.
+                backoff = min(60 * (2 ** attempt), 1800)
                 print(f"  [throttle detected, backing off {backoff}s — attempt {attempt + 1}/{max_throttle_retries}]")
+                if backoff >= 600 and save_cp_fn is not None:
+                    try:
+                        save_cp_fn()
+                        print(f"  [checkpoint saved before {backoff}s sleep]")
+                    except Exception as cp_err:
+                        print(f"  [checkpoint save failed: {cp_err}]")
                 time.sleep(backoff)
                 continue
             return None, None, err
@@ -479,7 +498,11 @@ def cmd_run(args):
         mut_refs = _resolve_mutashabihat(position, mut_by_src, position_map)
 
         prompt = build_prompt(ayah, tafsir, asbab_row, mut_refs)
-        obj, _, err = call_claude(prompt, model=model)
+        # Bound a checkpoint-saver closure for throttle-aware long sleeps.
+        obj, _, err = call_claude(
+            prompt, model=model,
+            save_cp_fn=lambda cp=cp, wid=worker_id: save_checkpoint(cp, wid),
+        )
 
         if obj is None or not isinstance(obj.get("tags"), list) or len(obj["tags"]) < 12:
             log_event({"ayah_id": ayah["id"], "ref": f"{ayah['surah_number']}:{ayah['ayah_number']}", "error": err or "tags<12"}, worker_id)
