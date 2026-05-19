@@ -323,6 +323,68 @@ def _is_throttle_error(stderr_text: str, returncode: int = 1) -> bool:
     return False
 
 
+MLX_SERVER_URL = os.environ.get("MLX_SERVER_URL", "http://100.104.36.27:8081")
+DEFAULT_LOCAL_MODEL = os.environ.get("MLX_DEFAULT_MODEL", "mlx-community/gemma-3-27b-it-qat-4bit")
+
+
+def call_local(prompt, model=None, timeout=300, _unused_save_cp_fn=None):
+    """Call mlx_lm.server (OpenAI-compatible) on Mac Studio.
+
+    No throttle backoff — local inference has no rolling-window quota. A
+    single failure is logged and the caller moves on; transient errors
+    (network blip, model crash) are not retried in-place to avoid burning
+    minutes on a single ayah.
+
+    Returns (obj, _, err) matching call_claude's signature so the work
+    loop dispatcher is symmetric.
+    """
+    mdl = model or DEFAULT_LOCAL_MODEL
+    payload = {
+        "model": mdl,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2000,
+        "temperature": 0.3,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{MLX_SERVER_URL}/v1/chat/completions",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return None, None, f"HTTP {e.code}: {e.read()[:200].decode('utf-8', errors='replace')}"
+    except urllib.error.URLError as e:
+        return None, None, f"network: {e}"
+    except Exception as e:
+        return None, None, f"local-call: {type(e).__name__}: {str(e)[:200]}"
+
+    try:
+        output = body["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError) as e:
+        return None, None, f"local response shape: {e}"
+
+    # Same JSON-extraction logic as call_claude
+    try:
+        obj = json.loads(output)
+        if isinstance(obj, dict) and isinstance(obj.get("tags"), list):
+            return obj, None, None
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{.*\}", output, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group())
+            if isinstance(obj, dict) and isinstance(obj.get("tags"), list):
+                return obj, None, None
+        except json.JSONDecodeError:
+            return None, None, "regex-extracted JSON parse failed"
+    return None, None, "no JSON object in output"
+
+
 def call_claude(prompt, timeout=120, max_throttle_retries=12, model=None, save_cp_fn=None):
     """Call claude -p with optional model override, throttle-aware backoff.
 
@@ -450,10 +512,16 @@ def cmd_run(args):
         worker_id = int(args[args.index("--worker-id") + 1])
     if "--num-workers" in args:
         num_workers = int(args[args.index("--num-workers") + 1])
+    backend = "claude"
+    if "--backend" in args:
+        backend = args[args.index("--backend") + 1]
+        if backend not in ("claude", "local"):
+            print(f"unknown backend: {backend}; must be 'claude' or 'local'")
+            return 2
 
     print("=" * 60)
     suffix = f" worker={worker_id}/{num_workers}" if worker_id is not None else ""
-    print(f"V5 Ihsan-grade enrichment — model={model or 'default'} resume={resume}{suffix}")
+    print(f"V5 Ihsan-grade enrichment — backend={backend} model={model or 'default'} resume={resume}{suffix}")
     print("=" * 60)
 
     cp = load_checkpoint(worker_id)
@@ -498,11 +566,16 @@ def cmd_run(args):
         mut_refs = _resolve_mutashabihat(position, mut_by_src, position_map)
 
         prompt = build_prompt(ayah, tafsir, asbab_row, mut_refs)
-        # Bound a checkpoint-saver closure for throttle-aware long sleeps.
-        obj, _, err = call_claude(
-            prompt, model=model,
-            save_cp_fn=lambda cp=cp, wid=worker_id: save_checkpoint(cp, wid),
-        )
+        # Dispatch by backend. Claude path needs throttle-aware checkpoint
+        # closure; local path has no rolling-window quota so save_cp_fn is
+        # accepted but unused.
+        if backend == "local":
+            obj, _, err = call_local(prompt, model=model)
+        else:
+            obj, _, err = call_claude(
+                prompt, model=model,
+                save_cp_fn=lambda cp=cp, wid=worker_id: save_checkpoint(cp, wid),
+            )
 
         if obj is None or not isinstance(obj.get("tags"), list) or len(obj["tags"]) < 12:
             log_event({"ayah_id": ayah["id"], "ref": f"{ayah['surah_number']}:{ayah['ayah_number']}", "error": err or "tags<12"}, worker_id)
