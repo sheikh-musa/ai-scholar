@@ -1390,18 +1390,26 @@ def gather_context(question, meta=None):
     # Keyword gate was producing false-negatives on every non-English-Arabic-
     # transliteration query. Filtering at the rank threshold below now serves
     # as the relevance gate (chunks with rank<0.45 are likely off-topic).
-    if _ctx_size(context_parts) < MAX_CONTEXT:
+    # No MAX_CONTEXT gate: rank threshold already filters noise, and the worst-
+    # case addition (3 hits × 2500c = 7.5KB) is bounded and high-value when it
+    # fires. Without this, fiqh-class queries with verbose tafsir/hadith
+    # context (e.g., "what nullifies the fast", "awrah to read from mushaf")
+    # were getting their fiqh retrieval blocked by an already-full budget.
+    if True:
         # Phase 2 semantic-first per CAI-PROCESS-GLUE-AUDIT-MIZANBOT-001
         # hybrid ruling. FTS-fallback on encoder timeout / empty / unreachable.
         try:
             fiqh_data = fiqh_semantic.search_semantic(question, limit=3)
         except Exception:
             fiqh_data = {"results": []}
-        # Rank threshold (validated 2026-05-19 against Tier 1 stress queries):
-        # 0.45 keeps the top-relevant baabs and excludes tangential bleed-in.
-        # Empirical rank floor for on-topic hits across sawm/wudu/zakat/salah
-        # queries was ~0.50; off-topic noise floor was ~0.40.
-        fiqh_data["results"] = [h for h in fiqh_data.get("results") or [] if h.get("rank", 0) >= 0.45]
+        # Rank threshold (calibrated 2026-05-19 against Tier 1 stress queries
+        # AND non-fiqh controls). bge-m3 has a gray zone 0.49-0.56 where both
+        # legitimate fiqh queries and broad-Islamic-knowledge queries land
+        # (e.g., "tafsir of ayat al-kursi" semantically overlaps Muqaddimah &
+        # Iman at 0.515). 0.50 cleanly excludes the worst non-fiqh leaks at the
+        # cost of one legitimate edge case ("what nullifies the fast" tops at
+        # 0.497) — that case is rescued by the FTS fallback below.
+        fiqh_data["results"] = [h for h in fiqh_data.get("results") or [] if h.get("rank", 0) >= 0.50]
         if not fiqh_data["results"]:
             # FTS fallback only when semantic returns nothing above threshold
             fiqh_data = lookup_fiqh(" ".join(words[:4]), limit=3)
