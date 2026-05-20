@@ -158,8 +158,20 @@ FIQH_TOPIC_KEYWORDS = {
     "nullify", "nullifies", "nullified",
     "invalidate", "invalidates",
     "break", "breaks", "breaking",
-    # NOT yet covered (hajj deferred to Phase 2). Add here when ingestion lands:
-    # "hajj", "umrah", "ihram", "miqat", "tawaf"
+    # Hajj — coverage added 2026-05-20 (Kashifat al-Sajā Hajj baab via
+    # ingest_kashifat_hajj.py, baab_order=6 under Safīnat umbrella).
+    "hajj", "ḥajj", "umrah", "ʿumrah", "umrat",
+    "ihram", "iḥrām", "muhrim", "muḥrim",
+    "miqat", "mīqāt", "mawaqit", "mawāqīt",
+    "tawaf", "ṭawāf", "tawafs",
+    "saʿy", "sai", "saiy", "sa'i", "sa'ee",
+    "safa", "marwah", "marwa",
+    "arafah", "ʿarafah", "wuquf", "wuqūf",
+    "muzdalifah", "mina", "minā",
+    "jamarat", "jamrah", "rami", "ramy",
+    "tahallul", "taḥallul",
+    "hady", "hadi", "qurbani", "udhiyah", "uḍḥiya",
+    "tamattuʿ", "tamattu", "qiran", "qirān", "ifrad", "ifrād",
 }
 
 
