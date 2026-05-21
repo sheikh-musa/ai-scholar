@@ -385,15 +385,24 @@ def cmd_approve(args):
 
     approver = args.approver or os.environ.get("USER", "unknown")
 
-    # 1. Insert provenance rows
+    # 1. Insert provenance rows (idempotent on SHA — retry-safe)
     print(f"Committing {len(m['proposed_provenance_rows'])} provenance row(s)...")
     committed_provenance_ids: list = []
     for pr in m["proposed_provenance_rows"]:
+        sha = pr["source_file_sha256"]
+        existing = supabase_get("ingestion_provenance", {
+            "source_file_sha256": f"eq.{sha}",
+            "select": "id", "limit": "1",
+        })
+        if existing:
+            committed_provenance_ids.append(existing[0]["id"])
+            print(f"  = provenance: id={existing[0]['id']} sha={sha[:16]} (already present, reused)")
+            continue
         pr_clean = {k: v for k, v in pr.items() if v is not None}
         pr_clean["ihsan_pipeline_manifest_id"] = m["id"]
         result = supabase_post("ingestion_provenance", pr_clean)
         committed_provenance_ids.append(result[0]["id"])
-        print(f"  + provenance: id={result[0]['id']} sha={pr['source_file_sha256'][:16]}")
+        print(f"  + provenance: id={result[0]['id']} sha={sha[:16]}")
 
     # 2. Cross-link provenance rows (set cross_attested_with arrays)
     if len(committed_provenance_ids) >= 2 and m.get("attestation"):
