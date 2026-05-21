@@ -1,0 +1,30 @@
+{
+  "manifest_label": "nihayat-zayn-2026-05-22",
+  "target_corpus_label": "Nihāyat al-Zayn fī Irshād al-Mubtadi'īn (Nawawi al-Bantani, comprehensive Shafi'i fiqh including Hajj)",
+  "sources": [
+    {
+      "adapter": "openiti",
+      "text_uri": "1316IbnCumarBantaniJawi.NihayatZayn",
+      "edition_uri": "JK000310-ara1"
+    },
+    {
+      "adapter": "openiti",
+      "text_uri": "1316IbnCumarBantaniJawi.NihayatZayn",
+      "edition_uri": "Shamela0006146-ara1"
+    }
+  ],
+  "attestation": {
+    "require_cross_attest": true,
+    "primary_source_idx": 0
+  },
+  "juridical_text": {
+    "text_name": "Nihāyat al-Zayn fī Irshād al-Mubtadi'īn",
+    "baab_or_section": "Full work",
+    "baab_order": null,
+    "author_name": "Muḥammad Nawawī ibn ʿUmar al-Jāwī al-Bantanī al-Shāfiʿī",
+    "author_death_hijri": 1316,
+    "author_death_gregorian": 1898,
+    "madhab": "shafii",
+    "dalil_strength": "primer_juridical"
+  }
+}
