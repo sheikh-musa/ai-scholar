@@ -114,7 +114,7 @@ _THROTTLE_MARKERS = (
 )
 
 
-def translate_block_via_cli(arabic_text: str, model: str = DEFAULT_MODEL, timeout: int = 240) -> str:
+def translate_block_via_cli(arabic_text: str, model: str = DEFAULT_MODEL, timeout: int = 480) -> str:
     """Call ~/.local/bin/claude -p via subprocess (Max plan, no API billing).
     Raises RateLimitError on detected throttle so caller can back off properly.
 
