@@ -92,8 +92,13 @@ Guidelines:
 Output ONLY the English translation. No preamble, no notes, no markdown headers."""
 
 
+class RateLimitError(RuntimeError):
+    """Anthropic HTTP 429 — back off significantly."""
+
+
 def translate_block_via_api(arabic_text: str, model: str = ANTHROPIC_MODEL, timeout: int = 180) -> str:
-    """POST to api.anthropic.com /v1/messages. Returns English translation text."""
+    """POST to api.anthropic.com /v1/messages. Returns English translation text.
+    Raises RateLimitError specifically on HTTP 429 so caller can do longer backoff."""
     if not ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
     payload = {
@@ -120,6 +125,8 @@ def translate_block_via_api(arabic_text: str, model: str = ANTHROPIC_MODEL, time
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
+        if e.code == 429:
+            raise RateLimitError(f"HTTP 429: {err_body[:200]}")
         raise RuntimeError(f"Anthropic API HTTP {e.code}: {err_body[:300]}")
     content = body.get("content", [])
     if not content:
@@ -203,22 +210,59 @@ def main():
             print(en[:500] + ("..." if len(en) > 500 else ""))
         return 0
 
-    # Parallel translation
+    # Checkpoint file — persist per-block translations so retries resume.
+    # Keyed by SHA of source row id (one checkpoint per juridical_text_id).
+    from pathlib import Path
+    checkpoint_path = Path(__file__).parent / f".translate_{src['id']}.checkpoint.json"
+    if checkpoint_path.exists():
+        cp = json.loads(checkpoint_path.read_text())
+        results = cp.get("results", [None] * len(blocks))
+        if len(results) != len(blocks):
+            print(f"  ⚠ checkpoint block count mismatch ({len(results)} vs {len(blocks)}), starting fresh")
+            results = [None] * len(blocks)
+        else:
+            done = sum(1 for r in results if r and len(r) > 1000)
+            print(f"  ⏵ resuming from checkpoint: {done}/{len(blocks)} blocks already done")
+    else:
+        results = [None] * len(blocks)
+
+    def save_checkpoint(rs):
+        checkpoint_path.write_text(json.dumps({
+            "juridical_text_id": src["id"],
+            "block_count": len(blocks),
+            "results": rs,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }))
+
+    # Parallel translation with rate-limit-aware backoff
     print(f"\n=== Translating {len(blocks)} blocks via {ANTHROPIC_MODEL} (concurrency={args.concurrency}) ===")
     t0 = time.time()
-    results: list = [None] * len(blocks)
-    completed = 0
+    completed = sum(1 for r in results if r and len(r) > 1000)
 
     def worker(idx: int, block: str) -> tuple[int, str]:
-        for attempt in range(3):
+        # Skip if already translated cleanly in a prior run
+        if results[idx] is not None and len(results[idx]) > 1000:
+            return idx, results[idx]
+        # Backoff schedule: 30, 60, 120, 240, 480 (max 17m total per block)
+        backoffs = [30, 60, 120, 240, 480]
+        for attempt in range(len(backoffs) + 1):
             try:
                 return idx, translate_block_via_api(block)
+            except RateLimitError as e:
+                if attempt == len(backoffs):
+                    return idx, f"<<TRANSLATION FAILED after {attempt+1} rate-limit retries: {e}>>"
+                wait = backoffs[attempt]
+                print(f"    [block {idx}] 429, backing off {wait}s (attempt {attempt+1}/{len(backoffs)})")
+                time.sleep(wait)
             except RuntimeError as e:
-                if attempt == 2:
-                    return idx, f"<<TRANSLATION FAILED: {e}>>"
-                time.sleep(2 ** attempt)
+                # Non-429 transient — short retry
+                if attempt < 2:
+                    time.sleep(5)
+                    continue
+                return idx, f"<<TRANSLATION FAILED: {e}>>"
         return idx, "<<UNREACHABLE>>"
 
+    # Iterative checkpoint save after each future completes
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
         futures = [ex.submit(worker, i, b) for i, b in enumerate(blocks)]
         for fut in concurrent.futures.as_completed(futures):
@@ -226,8 +270,18 @@ def main():
             results[idx] = en
             completed += 1
             elapsed = time.time() - t0
-            eta = elapsed / completed * (len(blocks) - completed)
+            eta = elapsed / completed * (len(blocks) - completed) if completed else 0
             print(f"  [{completed}/{len(blocks)}] block {idx}: {len(en)}c  elapsed={elapsed:.0f}s eta={eta:.0f}s")
+            if completed % 5 == 0:
+                save_checkpoint(results)
+    save_checkpoint(results)
+
+    # Check for failures BEFORE writing to DB
+    failures = [i for i, r in enumerate(results) if not r or len(r) < 1000]
+    if failures:
+        print(f"\n⚠ {len(failures)} blocks still failed after all retries: {failures[:10]}{'...' if len(failures)>10 else ''}")
+        print(f"  Run again to resume from checkpoint. NOT writing to DB until all blocks succeed.")
+        return 1
 
     # Concatenate
     english_text = "\n\n".join(results)
