@@ -31,6 +31,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 import unicodedata
@@ -41,8 +42,19 @@ from datetime import datetime, timezone
 
 SUPABASE_URL = "https://tscuymavysscrvoberrr.supabase.co"
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+# Default backend: Claude CLI via Max plan subscription (per memory
+# feedback_claude_max_default.md). Direct Anthropic API path is opt-in
+# only via --backend api flag and requires ANTHROPIC_API_KEY env.
+CLAUDE_BIN = os.path.expanduser("~/.local/bin/claude")
+CLAUDE_ENV = {
+    "HOME": os.path.expanduser("~"),
+    "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+    "USER": os.environ.get("USER", ""),
+    "SHELL": os.environ.get("SHELL", ""),
+    "LANG": os.environ.get("LANG", ""),
+}
+DEFAULT_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 
@@ -93,12 +105,48 @@ Output ONLY the English translation. No preamble, no notes, no markdown headers.
 
 
 class RateLimitError(RuntimeError):
-    """Anthropic HTTP 429 — back off significantly."""
+    """Throttle signal — back off significantly (CLI Max-plan or API 429)."""
 
 
-def translate_block_via_api(arabic_text: str, model: str = ANTHROPIC_MODEL, timeout: int = 180) -> str:
-    """POST to api.anthropic.com /v1/messages. Returns English translation text.
-    Raises RateLimitError specifically on HTTP 429 so caller can do longer backoff."""
+_THROTTLE_MARKERS = (
+    "rate limit", "rate_limit", "ratelimit", "too many requests", "429",
+    "usage limit", "usage_limit", "throttl", "quota", "exceeded",
+)
+
+
+def translate_block_via_cli(arabic_text: str, model: str = DEFAULT_MODEL, timeout: int = 240) -> str:
+    """Call ~/.local/bin/claude -p via subprocess (Max plan, no API billing).
+    Raises RateLimitError on detected throttle so caller can back off properly.
+
+    Detection (per v5 enrich pattern): explicit throttle keywords in stderr,
+    OR returncode!=0 with stderr length <50 (Claude CLI 2.1.x silent-failure
+    on Max-plan throttle window — observed empirically during v5 enrichment).
+    """
+    system_in_user = f"{TRANSLATION_SYSTEM_PROMPT}\n\n---\n\nTranslate to English:\n\n{arabic_text}"
+    cmd = [CLAUDE_BIN, "-p", system_in_user, "--model", model, "--output-format", "text"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=CLAUDE_ENV)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"CLI timeout after {timeout}s")
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip().lower()
+        if any(m in stderr for m in _THROTTLE_MARKERS):
+            raise RateLimitError(f"CLI throttle: {result.stderr[:200]}")
+        if len(stderr) < 50:
+            # Silent-failure pattern is also throttle per v5 finding
+            raise RateLimitError(f"CLI silent rc={result.returncode} (likely throttle)")
+        raise RuntimeError(f"CLI returncode={result.returncode}: {result.stderr[:200]}")
+    output = result.stdout.strip()
+    if not output:
+        raise RuntimeError("CLI returned empty stdout")
+    return output
+
+
+def translate_block_via_api(arabic_text: str, model: str = "claude-sonnet-4-6", timeout: int = 180) -> str:
+    """OPT-IN path: direct Anthropic REST. Requires ANTHROPIC_API_KEY env.
+    Use this ONLY when --backend api is explicitly passed; default is CLI/Max.
+    Per feedback_claude_max_default.md memory: API-key billing is wasteful
+    when Max subscription covers the work."""
     if not ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
     payload = {
@@ -163,8 +211,14 @@ def sha256_hex(text: str) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--juridical-text-id", required=True)
-    ap.add_argument("--concurrency", type=int, default=8)
+    ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--block-chars", type=int, default=7000)
+    ap.add_argument("--backend", choices=("cli", "api"), default="cli",
+                    help="cli: Claude CLI subprocess via Max plan (default — Musa pays "
+                         "flat sub, no per-call billing). api: direct Anthropic REST with "
+                         "ANTHROPIC_API_KEY (opt-in only; isrāf to use when Max covers it).")
+    ap.add_argument("--model", default=DEFAULT_MODEL,
+                    help="CLI model alias (sonnet/opus/haiku) or full model id")
     ap.add_argument("--dry-run", action="store_true",
                     help="translate first 2 blocks only, print to stdout, no DB writes")
     ap.add_argument("--limit-blocks", type=int, default=None)
@@ -172,8 +226,18 @@ def main():
 
     if not SUPABASE_KEY:
         sys.exit("ERROR: SUPABASE_SERVICE_ROLE_KEY not set")
-    if not ANTHROPIC_API_KEY:
-        sys.exit("ERROR: ANTHROPIC_API_KEY not set")
+    if args.backend == "api" and not ANTHROPIC_API_KEY:
+        sys.exit("ERROR: --backend api requires ANTHROPIC_API_KEY env")
+
+    # Bind the translator function based on backend choice
+    if args.backend == "cli":
+        def translate_block(text):
+            return translate_block_via_cli(text, model=args.model)
+        backend_label = f"Claude CLI Max plan / model={args.model}"
+    else:
+        def translate_block(text):
+            return translate_block_via_api(text)
+        backend_label = "Anthropic REST API (API-key billing, opt-in)"
 
     # Fetch the source juridical_texts row
     rows = supa("GET", f"/rest/v1/juridical_texts?id=eq.{args.juridical_text_id}&select=id,text_name,arabic_text,arabic_text_sha256,ingestion_provenance_id")
@@ -200,12 +264,12 @@ def main():
         print(f"  limit:        first {len(blocks)} blocks")
 
     if args.dry_run:
-        print(f"\n=== DRY-RUN: translating first 2 blocks ===")
+        print(f"\n=== DRY-RUN: translating first 2 blocks via {backend_label} ===")
         for i, b in enumerate(blocks[:2]):
             print(f"\n--- block {i} ({len(b)}c Arabic) ---")
             print(b[:200] + "...")
             t0 = time.time()
-            en = translate_block_via_api(b)
+            en = translate_block(b)
             print(f"--- English ({len(en)}c, {time.time()-t0:.1f}s) ---")
             print(en[:500] + ("..." if len(en) > 500 else ""))
         return 0
@@ -234,8 +298,8 @@ def main():
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }))
 
-    # Parallel translation with rate-limit-aware backoff
-    print(f"\n=== Translating {len(blocks)} blocks via {ANTHROPIC_MODEL} (concurrency={args.concurrency}) ===")
+    # Parallel translation with throttle-aware backoff
+    print(f"\n=== Translating {len(blocks)} blocks via {backend_label} (concurrency={args.concurrency}) ===")
     t0 = time.time()
     completed = sum(1 for r in results if r and len(r) > 1000)
 
@@ -243,19 +307,19 @@ def main():
         # Skip if already translated cleanly in a prior run
         if results[idx] is not None and len(results[idx]) > 1000:
             return idx, results[idx]
-        # Backoff schedule: 30, 60, 120, 240, 480 (max 17m total per block)
+        # Backoff schedule: 30, 60, 120, 240, 480 (max ~15.5m total per block)
         backoffs = [30, 60, 120, 240, 480]
         for attempt in range(len(backoffs) + 1):
             try:
-                return idx, translate_block_via_api(block)
+                return idx, translate_block(block)
             except RateLimitError as e:
                 if attempt == len(backoffs):
-                    return idx, f"<<TRANSLATION FAILED after {attempt+1} rate-limit retries: {e}>>"
+                    return idx, f"<<TRANSLATION FAILED after {attempt+1} throttle retries: {e}>>"
                 wait = backoffs[attempt]
-                print(f"    [block {idx}] 429, backing off {wait}s (attempt {attempt+1}/{len(backoffs)})")
+                print(f"    [block {idx}] throttle, backing off {wait}s (attempt {attempt+1}/{len(backoffs)})")
                 time.sleep(wait)
             except RuntimeError as e:
-                # Non-429 transient — short retry
+                # Non-throttle transient — short retry
                 if attempt < 2:
                     time.sleep(5)
                     continue
