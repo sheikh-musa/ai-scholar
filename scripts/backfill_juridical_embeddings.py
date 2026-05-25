@@ -86,20 +86,39 @@ def encoder_sha():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--language", default="en")
+    ap.add_argument("--language", default="en",
+                    help="(english-source path) ISO 639-1 language code in juridical_translations")
+    ap.add_argument("--source", choices=("english", "arabic"), default="english",
+                    help="english: chunk from juridical_translations.translation_text. "
+                         "arabic: chunk from juridical_texts.arabic_text (for ingests with no English translation).")
+    ap.add_argument("--juridical-text-id",
+                    help="(arabic-source path) restrict to a single juridical_texts row by uuid")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
 
     enc_sha = encoder_sha()
     print(f"encoder: {ENCODER_URL} model={ENCODER_MODEL} sha={enc_sha}")
+    print(f"corpus_version: {CORPUS_VERSION} chunk={CHUNK_CHARS}c/{CHUNK_OVERLAP}c overlap source={args.source}")
 
-    q = f"/rest/v1/juridical_translations?select=id,juridical_text_id,translation_text&language_code=eq.{args.language}"
+    # Two source paths: english (juridical_translations) and arabic (juridical_texts directly).
+    # bge-m3 is multilingual, so Arabic embeddings retrieve fine on English queries.
+    if args.source == "english":
+        q = f"/rest/v1/juridical_translations?select=id,juridical_text_id,translation_text&language_code=eq.{args.language}"
+        text_field = "translation_text"
+        id_field = "id"
+    else:
+        # Arabic-source: query juridical_texts directly
+        q = f"/rest/v1/juridical_texts?select=id,arabic_text"
+        if args.juridical_text_id:
+            q += f"&id=eq.{args.juridical_text_id}"
+        text_field = "arabic_text"
+        id_field = "id"
     if args.limit:
         q += f"&limit={args.limit}"
     rows = supa("GET", q)
     if not rows:
-        print(f"no translations for language={args.language}")
+        print(f"no rows for {args.source}-source query")
         return 0
 
     # Per-chunk embedding (Phase 3 schema migration 20260511_001 enabled this).
@@ -109,17 +128,19 @@ def main():
     now = datetime.now(timezone.utc).isoformat()
     payloads = []
     for r in rows:
-        text = r["translation_text"]
+        text = r[text_field]
         chunks = chunk_text(text)
         if not chunks:
-            print(f"  skip {r['id'][:8]}: no chunks", file=sys.stderr)
+            print(f"  skip {r[id_field][:8]}: no chunks", file=sys.stderr)
             continue
         chunk_vecs: list = []
         for i in range(0, len(chunks), BATCH):
             chunk_vecs.extend(embed_batch(chunks[i : i + BATCH]))
+        # Resolve juridical_text_id: english path has explicit FK, arabic path uses row id directly
+        juridical_text_id = r.get("juridical_text_id") or r["id"]
         for idx, (chunk, vec) in enumerate(zip(chunks, chunk_vecs)):
             payloads.append({
-                "juridical_text_id": r["juridical_text_id"],
+                "juridical_text_id": juridical_text_id,
                 "chunk_index": idx,
                 "chunk_text": chunk,
                 "embedding": vec,
@@ -131,7 +152,7 @@ def main():
                 "created_at": now,
                 "updated_at": now,
             })
-        print(f"  {r['id'][:8]}: {len(chunks)} chunks queued")
+        print(f"  {r[id_field][:8]}: {len(chunks)} chunks queued")
 
     if args.dry_run:
         print("dry-run; first payload preview:")
