@@ -105,6 +105,8 @@ def main():
     # bge-m3 is multilingual, so Arabic embeddings retrieve fine on English queries.
     if args.source == "english":
         q = f"/rest/v1/juridical_translations?select=id,juridical_text_id,translation_text&language_code=eq.{args.language}"
+        if args.juridical_text_id:
+            q += f"&juridical_text_id=eq.{args.juridical_text_id}"
         text_field = "translation_text"
         id_field = "id"
     else:

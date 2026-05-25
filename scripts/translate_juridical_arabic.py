@@ -352,12 +352,15 @@ def main():
     print(f"\nTotal English: {len(english_text)} chars (in {time.time()-t0:.0f}s)")
 
     # Insert provenance row for the translation
+    # Model identifier reflects the auth path actually used (Max-plan CLI vs
+    # opt-in API). args.model is the alias passed; args.backend is cli|api.
+    model_id = f"claude-{args.model}-via-{'max-cli' if args.backend == 'cli' else 'api-key'}"
     prov_row = {
-        "source_url": f"anthropic-api://{ANTHROPIC_MODEL}",
-        "source_maintainer": f"Anthropic Claude {ANTHROPIC_MODEL} (AI translation, 4-tier transparency tier='ai-generated')",
+        "source_url": f"claude://{model_id}",
+        "source_maintainer": f"Anthropic Claude {args.model} (AI translation, 4-tier transparency tier='ai-generated', auth={args.backend})",
         "license_declaration": (
             f"AI-generated English translation of juridical_texts.{src['id']} "
-            f"(arabic_sha256={src['arabic_text_sha256'][:16]}...) via Claude Sonnet "
+            f"(arabic_sha256={src['arabic_text_sha256'][:16]}...) via Claude {args.model} "
             f"on {datetime.now(timezone.utc).isoformat()}. NOT a scholar-translated text; "
             f"output_tier='ai-generated' per INV-3 4-tier transparency. Translation prompt "
             f"preserves Arabic transliterations + scholar attributions. Suitable for "
@@ -366,8 +369,8 @@ def main():
         "source_file_sha256": sha256_hex(english_text),
         "verified_by_identity": "cc-scholar (auto-translation pipeline)",
         "notes": (
-            f"Translated {len(blocks)} blocks × {args.block_chars}c via {ANTHROPIC_MODEL}. "
-            f"Source: juridical_texts row {src['id']}. "
+            f"Translated {len(blocks)} blocks × {args.block_chars}c via Claude {args.model} "
+            f"({args.backend} backend). Source: juridical_texts row {src['id']}. "
             f"Original Arabic sha256: {src['arabic_text_sha256']}."
         ),
     }
@@ -379,12 +382,12 @@ def main():
     tr_row = {
         "juridical_text_id": src["id"],
         "language_code": "en",
-        "translator_name": f"Claude {ANTHROPIC_MODEL} (auto-translated)",
+        "translator_name": f"Claude {args.model} (auto-translated, {args.backend})",
         "translation_source_work": f"AI translation of {src['text_name']} (Arabic source via OpenITI)",
         "translation_text": english_text,
         "translation_text_sha256": sha256_hex(english_text),
         "output_tier": "ai-generated",
-        "edition_label": f"auto-{ANTHROPIC_MODEL}-{datetime.now(timezone.utc).date().isoformat()}",
+        "edition_label": f"auto-{args.model}-{datetime.now(timezone.utc).date().isoformat()}",
         "ingestion_provenance_id": prov_id,
     }
     tr_result = supa("POST", "/rest/v1/juridical_translations", tr_row)
