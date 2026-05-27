@@ -1434,7 +1434,7 @@ def gather_context(question, meta=None):
                 # path returns full chapter (PK-constrained 1 row per text);
                 # FTS path returns ~2000-char snippet from _extract_keyword_snippet.
                 # Phase 3 schema migration to per-chunk rows replaces this slice.
-                snippet = (hit.get("text") or "")[:2500]
+                snippet = (hit.get("text") or "")[:4000]   # was 2500; allow full 3000c chunks +safety margin
                 entries.append(
                     f"Source: {hit['source_work']}\n"
                     f"Chapter: {hit['baab']}\n"
@@ -1495,7 +1495,12 @@ RULES:
   these passages. After each matn quotation, append:
   "This passage is from the Shafi'i primer for reference; consult a qualified
   scholar for application to your specific situation."
-- Keep response concise (Telegram format, under 3000 chars).
+- Telegram message budget: aim for under 3900 chars total (hard limit is 4096).
+  PRIORITY when fitting: surface the FULL matn enumeration verbatim — never
+  summarize an arkan/wajibat/shurut/mubtilat/nawaqid list, never drop items
+  mid-enumeration, never use "etc." or "..." in place of listed integrals.
+  If space is tight, shorten the reflective question or drop tangential
+  hadith — never abbreviate the matn integrals.
 - Include Arabic text when showing Quranic verses.
 - End with a reflective question (practice off-ramp) to move knowledge toward action.
 - If the data doesn't answer the question, say so honestly.
@@ -1593,25 +1598,61 @@ def tg_request(method, data=None):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _split_for_telegram(text: str, max_chars: int = 4000) -> list[str]:
+    """Split long responses on natural boundaries instead of hard-cutting at 4000c.
+
+    Telegram hard limit is 4096c per message. Prefer splitting on '\\n---\\n'
+    section breaks; fall back to paragraph breaks ('\\n\\n'); fall back to
+    line breaks; last resort, hard-cut. Returns ≥1 messages, each ≤ max_chars.
+    """
+    if len(text) <= max_chars:
+        return [text]
+    parts: list = []
+    remaining = text
+    while len(remaining) > max_chars:
+        # Look for the latest boundary within the first max_chars
+        window = remaining[:max_chars]
+        cut = -1
+        for sep in ("\n\n---\n\n", "\n---\n", "\n\n", "\n"):
+            idx = window.rfind(sep)
+            if idx > max_chars // 2:  # only accept if not too early
+                cut = idx + len(sep)
+                break
+        if cut < 0:
+            cut = max_chars  # hard fallback
+        parts.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        parts.append(remaining)
+    return parts
+
+
 def send_message(chat_id, text):
-    """Send a Telegram message, falling back to plain text if Markdown fails."""
-    truncated = text[:4000] + "..." if len(text) > 4000 else text
-    try:
-        tg_request("sendMessage", {
-            "chat_id": chat_id,
-            "text": truncated,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        })
-    except Exception:
+    """Send a Telegram message, falling back to plain text if Markdown fails.
+    Long responses (>4000c) split on natural section breaks across multiple
+    messages instead of hard-cutting at 4000c."""
+    chunks = _split_for_telegram(text, max_chars=4000)
+    n = len(chunks)
+    for i, chunk in enumerate(chunks):
+        # Add 1/N indicator on multi-message responses
+        if n > 1:
+            chunk = f"{chunk}\n\n_({i+1}/{n})_"
         try:
             tg_request("sendMessage", {
                 "chat_id": chat_id,
-                "text": truncated,
+                "text": chunk,
+                "parse_mode": "Markdown",
                 "disable_web_page_preview": True,
             })
-        except Exception as e:
-            print(f"  Failed to send message: {e}")
+        except Exception:
+            try:
+                tg_request("sendMessage", {
+                    "chat_id": chat_id,
+                    "text": chunk,
+                    "disable_web_page_preview": True,
+                })
+            except Exception as e:
+                print(f"  Failed to send message chunk {i+1}/{n}: {e}")
 
 
 def send_typing(chat_id):
