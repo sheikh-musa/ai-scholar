@@ -47,6 +47,14 @@ const RULING_PHRASES = [
   /what\s+is\s+the\s+punishment\s+for/i,
   /must\s+i/i,
   /is\s+it\s+permissible/i,
+  // Broader "can/should I ..." patterns without requiring "in Islam" suffix
+  // (added 2026-05-27 after self-test showed "can i marry a non-muslim" classified as 'other')
+  /can\s+i\s+(get\s+)?(marr|divorc|combine|wear|eat|drink|trade|sell|buy|invest|listen|watch|use)/i,
+  /can\s+a\s+(muslim|woman|man|wife|husband|child|believer|mu'?min|mu?slim)/i,
+  /should\s+i\s+(do|perform|fast|pray|give|take|stop|avoid|continue|repeat|combine|shorten)/i,
+  /is\s+it\s+(required|necessary|enough|sufficient|valid|invalid)/i,
+  // Direct "is X haram/halal" with the predicate-form (not just preceded by "to")
+  /^(is|are)\s+\S+(\s+\S+)*\s+(halal|haram|permissible|forbidden|allowed)\b/i,
 ];
 
 const DEFINITION_PHRASES = [
@@ -54,12 +62,22 @@ const DEFINITION_PHRASES = [
   /^(what\s+does|meaning\s+of)\s+[a-z؀-ۿ\s'"-]+\??$/i,
   /define\s+[a-z؀-ۿ\s'"-]+/i,
   /^explain\s+(the\s+term|the\s+word|the\s+concept)/i,
+  // Compact fiqh-vocab queries: "rukun solat", "wajibat of sawm", "arkan of wudu",
+  // "fard of ghusl", "shurut of salah", "nullifiers of fasting" — Malay/Arabic-transliteration
+  // noun phrases that are definitional in nature. Added 2026-05-27 after self-test showed
+  // these classified as 'other'.
+  /^(rukn|rukun|arkan|wajib|wajibat|wajibate|fard|fardu|furud|furudh|farudh|sunan|mubtilat|mufsidat|nawaqid|nullifi|invalid|shart|shurut|aqsam|sifat|asnaf|maqasid)\b/i,
+  /\b(of|al-|ul-|li|fi)\s+(salah|salat|solat|sawm|siyam|saum|zakat|zakah|hajj|wudu|wuduʾ|ghusl|tayammum|taharah)\b/i,
 ];
 
 const BIOGRAPHY_PHRASES = [
   /^who\s+(is|was|were)\s+(imam\s+|sheikh\s+|shaykh\s+)?[a-z؀-ۿ'"\s-]+\??$/i,
   /biography\s+of/i,
   /tell\s+me\s+about\s+(imam|sheikh|shaykh|companion|sahabi|tabi)/i,
+  // Arabic-name prefixes (Ibn/Abu/Al-/Umm/Abd/Hafiz/etc.) without requiring imam/sheikh title
+  // (added 2026-05-27 after self-test showed "tell me about ibn taymiyyah" classified as 'other')
+  /tell\s+me\s+about\s+(ibn|abu|al-|umm|abd|ʿabd|hafiz|sayyid|sayyida|mulla|allamah|allama|ustadh|ustaz|hadrat|h\.\s)/i,
+  /^who\s+(is|was|were)\s+(ibn|abu|al-|umm|abd|hafiz|sayyid|mulla|allamah|ustadh|hadrat)\s+/i,
 ];
 
 const LANGUAGE_PHRASES = [

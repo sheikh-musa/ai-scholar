@@ -142,12 +142,26 @@ def _cosine(a: list, b) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-def search_semantic(query: str, limit: int = 3) -> dict:
-    """Semantic retrieval over juridical corpus. Same return shape as
-    mizan_bot.lookup_fiqh so wire-in is a one-line swap.
+def search_semantic(query: str, limit: int = 3, max_per_text_id: int = 2) -> dict:
+    """Semantic retrieval over juridical corpus with per-source diversification.
+
+    Same return shape as mizan_bot.lookup_fiqh so wire-in is a one-line swap.
 
     Returns: {"results": [{baab, translator, source_work, edition, text, tier, rank}, ...]}
     Empty results on encoder timeout, transport error, or zero corpus rows.
+
+    Diversification rationale (2026-05-27):
+      After ingesting Nihāyat al-Zayn (794 English chunks via OpenITI+Sonnet),
+      Nihāyat's broader content outranked the existing Safīnat al-Najā baabs
+      (57 specialized chunks) on most fiqh queries. E2E test panel showed
+      10/15 queries returning ONLY Nihāyat, losing the Safīnat matn-style
+      answers that Hadhrami Shafi'i users expect.
+
+      Fix: cap chunks-per-juridical_text_id at `max_per_text_id` (default 2).
+      Sort all embeddings by cosine, walk in order, include only if we
+      haven't hit the cap for that text. Preserves top-1 quality
+      (highest-ranked chunk always wins) while reserving slots for other
+      sources when their chunks rank ≥ 0.45.
     """
     qvec = _encode(_expand_query(query))
     if qvec is None:
@@ -163,11 +177,25 @@ def search_semantic(query: str, limit: int = 3) -> dict:
     if not embeds:
         return {"results": []}
 
-    scored = sorted(
+    # Score all, sort descending
+    all_scored = sorted(
         ((_cosine(qvec, row["embedding"]), row) for row in embeds),
         key=lambda t: t[0],
         reverse=True,
-    )[:limit]
+    )
+
+    # Per-text_id-diversified top-K: walk in score order, take up to
+    # max_per_text_id from any single juridical_text_id
+    scored: list = []
+    per_text_count: dict = {}
+    for score, row in all_scored:
+        if len(scored) >= limit:
+            break
+        tid = row["juridical_text_id"]
+        if per_text_count.get(tid, 0) >= max_per_text_id:
+            continue
+        scored.append((score, row))
+        per_text_count[tid] = per_text_count.get(tid, 0) + 1
 
     if not scored:
         return {"results": []}
