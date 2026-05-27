@@ -1517,10 +1517,16 @@ FORMATTING (Telegram Markdown):
 
 Respond directly to the user's question:"""
 
+    # 2026-05-27: timeout bumped 60→180s. Dense fiqh queries with 30-40KB
+    # retrieval context, controversial-topic queries that need careful refusal,
+    # and ikhtilaf-rich tafsir queries routinely take 60-120s. The prior 60s
+    # was producing "taking too long" timeout messages on legitimate
+    # well-reasoned answers. 180s gives 3x headroom while still bounding
+    # bot's polling-loop latency.
     try:
         result = subprocess.run(
             [CLAUDE_PATH, "-p", prompt, "--output-format", "text"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, timeout=180,
             env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -1528,7 +1534,8 @@ Respond directly to the user's question:"""
         else:
             return f"I encountered an issue processing your question. Error: {result.stderr[:200] if result.stderr else 'unknown'}"
     except subprocess.TimeoutExpired:
-        return "I'm taking too long to think. Please try a simpler question."
+        return ("I'm taking longer than usual to think this through — the topic needs careful "
+                "consideration. Try asking again, or rephrase as a more specific question.")
     except Exception as e:
         return f"Error: {str(e)}"
 
