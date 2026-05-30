@@ -700,7 +700,12 @@ def get_session(chat_id):
             "last_context": "",
             "last_topics": [],
             "last_active": now,
+            "answer_level": "seeker",  # layman | seeker | scholar (default seeker)
         }
+    # Backfill answer_level on pre-existing sessions (session dict survives bot
+    # restarts only in-process — fresh sessions get the default; old sessions
+    # mid-conversation when this feature shipped get backfilled).
+    sessions[chat_id].setdefault("answer_level", "seeker")
     sessions[chat_id]["last_active"] = now
     return sessions[chat_id]
 
@@ -1454,8 +1459,55 @@ def gather_context(question, meta=None):
 
 
 # --- Claude reasoning ---
-def ask_claude(question, context, history=None):
-    """Use Claude Code CLI to reason over the context."""
+# ---------------------------------------------------------------------------
+# Audience-level prompt variants (added 2026-05-31 per operator directive
+# "too technical" feedback). Three levels mapped to existing Islamic education
+# conventions. Default 'seeker' (matches Hadhrami-Shafi'i pedagogy audience).
+# ---------------------------------------------------------------------------
+
+LEVEL_GUIDANCE = {
+    "layman": """AUDIENCE TIER: LAYMAN (average Muslim, plain-English preference).
+- Open with a one-line plain answer in everyday English, then expand.
+- Translate every Arabic term inline on first use ("wudu (ablution)", "taqwa (God-consciousness)").
+- Use AT MOST ONE primary hadith or verse citation; brief format only ("Bukhari · authentic").
+- Skip verbatim matn passages UNLESS they directly enumerate the answer to the user's question.
+- Skip the 4-tier transparency markers (📖 📝 💭) — use plain prose.
+- Keep total response 150-300 words.
+- End with the practical takeaway, NOT a reflective question.
+- NEVER include retrieved passages that don't match the user's question — say
+  "the corpus doesn't directly address this" instead.""",
+
+    "seeker": """AUDIENCE TIER: SEEKER (serious Muslim student, default tier).
+- Open with a focused answer, then layer the scholarly evidence.
+- Use Arabic terms with parenthetical English on first use ("ṭahāra (purification)").
+- Cite hadith with brief format: (Collection #N · ✅ Sahih · Narrator).
+- Surface matn passages ONLY when they directly enumerate the answer (arkan, wajibat,
+  shurut lists). If the retrieved matn is off-topic, omit it — do not surface unrelated
+  matn just because it was retrieved.
+- Use the 4-tier badges sparingly: 📖 for direct Qur'an/hadith quotes, 📝 for
+  paraphrased tafsir. Drop 💭 unless explicitly synthesizing.
+- Keep total response 300-600 words.
+- End with a brief reflective question tying back to practice.""",
+
+    "scholar": """AUDIENCE TIER: SCHOLAR (fiqh student, advanced reader).
+- Full scholarly apparatus.
+- Surface verbatim matn from retrieved Shafi'i primer when present, with full attribution.
+- Complete isnād citations + grading + narrator for every hadith.
+- Surface ikhtilāf with scholar-by-scholar attribution when retrieved tafsir entries diverge.
+- Use all four 4-tier markers (📖 📝 💭) per their strict definitions.
+- Quote Arabic alongside translation for Qur'anic verses.
+- End with a substantive reflective question that opens further inquiry.
+- No length cap; aim for 600-1200 words depending on subject density.""",
+}
+
+
+def ask_claude(question, context, history=None, answer_level="seeker"):
+    """Use Claude Code CLI to reason over the context.
+
+    answer_level: 'layman' | 'seeker' (default) | 'scholar' — controls audience-tier
+    guidance injected into the system prompt. Per-session preference adjustable via
+    Telegram inline keyboard buttons appended to every response.
+    """
     history_block = ""
     if history:
         turns = []
@@ -1473,10 +1525,18 @@ def ask_claude(question, context, history=None):
             "turn(s) as the primary disambiguation source.\n"
         )
 
+    level_block = LEVEL_GUIDANCE.get(answer_level, LEVEL_GUIDANCE["seeker"])
+
     prompt = f"""You are Mizan (Al-Bayan), an Islamic knowledge assistant. A user asked:
 
 "{question}"
 {history_block}
+{level_block}
+
+(The AUDIENCE TIER guidance above takes precedence over the RULES below on the
+same topic — e.g., if AUDIENCE TIER says "skip verbatim matn unless directly
+answering" then the RULE about "always surface matn" is overridden for THIS tier.)
+
 Here is the relevant data from the Quran, tafsir, and hadith database:
 
 {context}
@@ -1627,30 +1687,49 @@ def _split_for_telegram(text: str, max_chars: int = 4000) -> list[str]:
     return parts
 
 
-def send_message(chat_id, text):
+def _level_keyboard(current_level):
+    """Inline keyboard for audience-tier adjustment. Shown on the LAST chunk
+    of every substantive response. Highlights the user's current tier.
+    """
+    def label(tier_name, glyph, display):
+        return "● " + display if tier_name == current_level else glyph + " " + display
+    return {
+        "inline_keyboard": [[
+            {"text": label("layman", "👶", "Simpler"), "callback_data": "level:layman"},
+            {"text": label(current_level, "✓", "Keep"), "callback_data": "level:keep"},
+            {"text": label("scholar", "🎓", "Deeper"), "callback_data": "level:scholar"},
+        ]],
+    }
+
+
+def send_message(chat_id, text, reply_markup=None):
     """Send a Telegram message, falling back to plain text if Markdown fails.
     Long responses (>4000c) split on natural section breaks across multiple
-    messages instead of hard-cutting at 4000c."""
+    messages instead of hard-cutting at 4000c. If reply_markup provided, it
+    attaches to the LAST chunk only (so buttons sit at the bottom of the
+    full response, not after each fragment)."""
     chunks = _split_for_telegram(text, max_chars=4000)
     n = len(chunks)
     for i, chunk in enumerate(chunks):
+        is_last = (i == n - 1)
         # Add 1/N indicator on multi-message responses
         if n > 1:
             chunk = f"{chunk}\n\n_({i+1}/{n})_"
+        payload = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
+        }
+        if reply_markup and is_last:
+            payload["reply_markup"] = json.dumps(reply_markup)
         try:
-            tg_request("sendMessage", {
-                "chat_id": chat_id,
-                "text": chunk,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True,
-            })
+            tg_request("sendMessage", payload)
         except Exception:
             try:
-                tg_request("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": chunk,
-                    "disable_web_page_preview": True,
-                })
+                # Fallback without Markdown
+                payload.pop("parse_mode", None)
+                tg_request("sendMessage", payload)
             except Exception as e:
                 print(f"  Failed to send message chunk {i+1}/{n}: {e}")
 
@@ -1707,11 +1786,93 @@ def main():
             updates = tg_request("getUpdates", {
                 "offset": offset,
                 "timeout": 30,
-                "allowed_updates": ["message"],
+                "allowed_updates": ["message", "callback_query"],
             })
 
             for update in updates.get("result", []):
                 offset = update["update_id"] + 1
+
+                # --- Inline-keyboard callback for audience-tier adjustment ---
+                cb = update.get("callback_query")
+                if cb:
+                    cb_id = cb.get("id")
+                    cb_data = cb.get("data", "")
+                    cb_chat = (cb.get("message") or {}).get("chat", {}).get("id")
+                    cb_user = cb.get("from", {}).get("first_name", "?")
+                    if not cb_chat or not cb_data.startswith("level:"):
+                        # Ack with nothing if malformed
+                        try:
+                            tg_request("answerCallbackQuery", {"callback_query_id": cb_id})
+                        except Exception:
+                            pass
+                        continue
+                    new_level = cb_data.split(":", 1)[1]   # 'layman'|'seeker'|'scholar'|'keep'
+                    session = get_session(cb_chat)
+
+                    if new_level == "keep":
+                        # User dismissed — acknowledge silently
+                        try:
+                            tg_request("answerCallbackQuery", {
+                                "callback_query_id": cb_id,
+                                "text": f"Level kept at {session['answer_level']}.",
+                            })
+                        except Exception:
+                            pass
+                        continue
+
+                    if new_level not in ("layman", "seeker", "scholar"):
+                        try:
+                            tg_request("answerCallbackQuery", {"callback_query_id": cb_id})
+                        except Exception:
+                            pass
+                        continue
+
+                    # Update session preference + re-ask the last query at the new level
+                    old_level = session["answer_level"]
+                    session["answer_level"] = new_level
+                    last_q = session.get("last_query", "")
+                    print(f"[{cb_user}] callback level: {old_level} → {new_level}")
+
+                    # Acknowledge the tap (Telegram shows toast briefly)
+                    try:
+                        tg_request("answerCallbackQuery", {
+                            "callback_query_id": cb_id,
+                            "text": f"Reformatting at {new_level} level…",
+                        })
+                    except Exception:
+                        pass
+
+                    if not last_q:
+                        send_message(cb_chat,
+                                     f"Level set to *{new_level}*. Ask me your next question.")
+                        continue
+
+                    # Re-answer the previous query at the new level
+                    try:
+                        send_typing(cb_chat)
+                        retrieval_meta = RetrievalMeta()
+                        context = gather_context(last_q, meta=retrieval_meta)
+                        answer = ask_claude(
+                            last_q, context,
+                            session["history"] if session["history"] else None,
+                            answer_level=new_level,
+                        )
+                        # Don't append to history a second time — just update last_*
+                        session["last_context"] = context
+                        send_message(cb_chat, answer, reply_markup=_level_keyboard(new_level))
+                        print(f"  -> Reformatted response sent ({len(answer)} chars) at {new_level}")
+                        persist_emission(
+                            cb_chat, last_q, answer,
+                            retrieval_ids=retrieval_meta.retrieval_ids,
+                            matched_passage_id=retrieval_meta.matched_passage_id,
+                        )
+                    except Exception as e:
+                        print(f"  Callback re-answer failed: {type(e).__name__}: {e}")
+                        send_message(cb_chat,
+                                     "I couldn't reformat the last response. Try asking again at your preferred level.")
+                    continue
+
+                # --- Regular message update ---
                 msg = update.get("message", {})
                 text = msg.get("text", "").strip()
                 chat_id = msg.get("chat", {}).get("id")
@@ -1748,6 +1909,11 @@ def main():
                         "• _Explain the inner dimensions of 2:255_\n"
                         "• _Bukhari 1_ (direct hadith lookup)\n\n"
                         "💬 _I remember context — ask follow-ups like \"tell me more\" or \"what about the Arabic?\"_\n\n"
+                        "*Three answer levels:*\n"
+                        "👶 *Layman* — plain English, terms translated\n"
+                        "📚 *Seeker* (default) — scholarly with English glosses\n"
+                        "🎓 *Scholar* — full apparatus, verbatim matn\n"
+                        "_After every answer, tap [Simpler] / [Keep] / [Deeper] to adjust._\n\n"
                         "⚠️ I do not issue fiqh rulings (halal/haram). "
                         "Consult a qualified scholar for those."
                     )
@@ -1894,9 +2060,13 @@ def main():
                         print("  Gathering context...")
                         context = gather_context(text, meta=retrieval_meta)
 
-                    print("  Asking Claude...")
+                    print(f"  Asking Claude... (level={session['answer_level']})")
                     send_typing(chat_id)
-                    answer = ask_claude(text, context, session["history"] if session["history"] else None)
+                    answer = ask_claude(
+                        text, context,
+                        session["history"] if session["history"] else None,
+                        answer_level=session["answer_level"],
+                    )
 
                     # Update session
                     add_to_history(session, "user", text)
@@ -1907,7 +2077,7 @@ def main():
                     session["last_topics"] = [w for w in _re.findall(r'\w+', text.lower())
                                               if w not in STOP_WORDS and len(w) > 2]
 
-                    send_message(chat_id, answer)
+                    send_message(chat_id, answer, reply_markup=_level_keyboard(session["answer_level"]))
                     print(f"  -> Response sent ({len(answer)} chars)")
                     print(f"  >> {answer[:300]}{'...' if len(answer) > 300 else ''}")
 
