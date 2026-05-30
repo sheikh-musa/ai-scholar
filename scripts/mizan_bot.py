@@ -700,12 +700,18 @@ def get_session(chat_id):
             "last_context": "",
             "last_topics": [],
             "last_active": now,
-            "answer_level": "seeker",  # layman | seeker | scholar (default seeker)
+            "answer_level": "seeker",       # layman | seeker | scholar (default seeker)
+            "level_responses": {},          # level → telegram message_id (for the
+                                            # last_query at that level; cleared when
+                                            # last_query changes; lets callback handler
+                                            # reply-point to existing answers instead
+                                            # of regenerating).
         }
-    # Backfill answer_level on pre-existing sessions (session dict survives bot
+    # Backfill new fields on pre-existing sessions (session dict survives bot
     # restarts only in-process — fresh sessions get the default; old sessions
     # mid-conversation when this feature shipped get backfilled).
     sessions[chat_id].setdefault("answer_level", "seeker")
+    sessions[chat_id].setdefault("level_responses", {})
     sessions[chat_id]["last_active"] = now
     return sessions[chat_id]
 
@@ -746,12 +752,27 @@ def is_followup(text, session):
         pronouns = {"that", "this", "it", "those", "these", "the same"}
         if any(p in words for p in pronouns):
             return True
-    # Fix 4a: short message in an established thematic thread
-    # (catches "tell me about X", "what about Y", "the abu hurayra incident" etc.)
+    # Fix 4a (tightened 2026-05-31 — was auto-marking ANY ≤8-word message
+    # as follow-up when history existed, which silently reused stale context
+    # for genuinely new questions like "can we dye our hair black?" after
+    # a qurban question). Now requires either an explicit "more"/"continue"
+    # signal OR strong topic-word overlap with last_topics (≥2 overlaps
+    # AND no introduced topic-shift words).
     if (len(words) <= 8
             and session.get("history")
             and session.get("last_topics")):
-        return True
+        # Explicit continuation signals
+        if any(w in words for w in ("more", "continue", "also", "elaborate", "expand")):
+            return True
+        # Topic-word overlap (must be strong — single word like "hair" doesn't
+        # qualify if the rest of the message introduces new content words)
+        last_topic_set = set(session["last_topics"])
+        content_words = [w.strip(".,;:!?'\"") for w in words
+                         if len(w) > 3 and w.lower() not in STOP_WORDS]
+        overlap = [w for w in content_words if w.lower() in last_topic_set]
+        new_content = [w for w in content_words if w.lower() not in last_topic_set]
+        if len(overlap) >= 2 and len(new_content) <= 1:
+            return True
     return False
 
 
@@ -1647,7 +1668,15 @@ def persist_emission(chat_id, query_text, response_text, retrieval_ids=None, mat
 
 # --- Telegram helpers ---
 def tg_request(method, data=None):
-    """Make a Telegram Bot API request."""
+    """Make a Telegram Bot API request.
+
+    Telegram returns HTTP 200 with {"ok":false,...} on logical errors (e.g.
+    bad Markdown, message too long, "Bad Request: can't parse entities").
+    Without checking the ok field these silently passed as success — recently
+    caused inline-keyboard re-ask responses to appear successfully sent in
+    bot logs while never reaching the user. 2026-05-31: raise on ok=false
+    so the caller's try/except fallback path actually fires.
+    """
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
     if data:
         payload = json.dumps(data).encode("utf-8")
@@ -1655,7 +1684,13 @@ def tg_request(method, data=None):
     else:
         req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        body = json.loads(resp.read().decode("utf-8"))
+    if isinstance(body, dict) and body.get("ok") is False:
+        raise RuntimeError(
+            f"Telegram {method} ok=false: code={body.get('error_code')} "
+            f"desc={body.get('description','?')[:200]}"
+        )
+    return body
 
 
 def _split_for_telegram(text: str, max_chars: int = 4000) -> list[str]:
@@ -1688,28 +1723,35 @@ def _split_for_telegram(text: str, max_chars: int = 4000) -> list[str]:
 
 
 def _level_keyboard(current_level):
-    """Inline keyboard for audience-tier adjustment. Shown on the LAST chunk
-    of every substantive response. Highlights the user's current tier.
+    """Inline keyboard for audience-tier adjustment. Context-aware:
+      layman   → [✓ Current: Layman] [🎓 More detail]
+      seeker   → [👶 Simpler] [✓ Current: Seeker] [🎓 More detail]
+      scholar  → [👶 Simpler] [✓ Current: Scholar]
+    The "Current" button is informational (tapping it = keep, no re-ask).
+    Simpler/Deeper buttons only appear when there's a direction to go.
     """
-    def label(tier_name, glyph, display):
-        return "● " + display if tier_name == current_level else glyph + " " + display
-    return {
-        "inline_keyboard": [[
-            {"text": label("layman", "👶", "Simpler"), "callback_data": "level:layman"},
-            {"text": label(current_level, "✓", "Keep"), "callback_data": "level:keep"},
-            {"text": label("scholar", "🎓", "Deeper"), "callback_data": "level:scholar"},
-        ]],
-    }
+    buttons = []
+    if current_level != "layman":
+        buttons.append({"text": "👶 Simpler", "callback_data": "level:layman" if current_level == "seeker" else "level:seeker"})
+    current_label = current_level.capitalize()
+    buttons.append({"text": f"✓ Current: {current_label}", "callback_data": "level:keep"})
+    if current_level != "scholar":
+        buttons.append({"text": "🎓 More detail", "callback_data": "level:scholar" if current_level == "seeker" else "level:seeker"})
+    return {"inline_keyboard": [buttons]}
 
 
-def send_message(chat_id, text, reply_markup=None):
+def send_message(chat_id, text, reply_markup=None, reply_to_message_id=None):
     """Send a Telegram message, falling back to plain text if Markdown fails.
     Long responses (>4000c) split on natural section breaks across multiple
     messages instead of hard-cutting at 4000c. If reply_markup provided, it
-    attaches to the LAST chunk only (so buttons sit at the bottom of the
-    full response, not after each fragment)."""
+    attaches to the LAST chunk only.
+
+    Returns the Telegram message_id of the LAST chunk (or None on failure)
+    so the caller can track-by-level and reply-point on revisit.
+    """
     chunks = _split_for_telegram(text, max_chars=4000)
     n = len(chunks)
+    last_message_id = None
     for i, chunk in enumerate(chunks):
         is_last = (i == n - 1)
         # Add 1/N indicator on multi-message responses
@@ -1723,15 +1765,22 @@ def send_message(chat_id, text, reply_markup=None):
         }
         if reply_markup and is_last:
             payload["reply_markup"] = json.dumps(reply_markup)
+        if reply_to_message_id and i == 0:
+            payload["reply_to_message_id"] = reply_to_message_id
         try:
-            tg_request("sendMessage", payload)
+            result = tg_request("sendMessage", payload)
+            if is_last and isinstance(result, dict):
+                last_message_id = (result.get("result") or {}).get("message_id")
         except Exception:
             try:
                 # Fallback without Markdown
                 payload.pop("parse_mode", None)
-                tg_request("sendMessage", payload)
+                result = tg_request("sendMessage", payload)
+                if is_last and isinstance(result, dict):
+                    last_message_id = (result.get("result") or {}).get("message_id")
             except Exception as e:
                 print(f"  Failed to send message chunk {i+1}/{n}: {e}")
+    return last_message_id
 
 
 def send_typing(chat_id):
@@ -1833,6 +1882,30 @@ def main():
                     last_q = session.get("last_query", "")
                     print(f"[{cb_user}] callback level: {old_level} → {new_level}")
 
+                    # If the same query has already been answered at this level,
+                    # point the user back to that message instead of burning
+                    # tokens to regenerate it.
+                    cached_msg_id = (session.get("level_responses") or {}).get(new_level)
+                    if cached_msg_id and last_q:
+                        try:
+                            tg_request("answerCallbackQuery", {
+                                "callback_query_id": cb_id,
+                                "text": f"Already answered at {new_level} level — see above.",
+                            })
+                        except Exception:
+                            pass
+                        try:
+                            send_message(
+                                cb_chat,
+                                f"📌 You already saw this question at *{new_level}* level — see the message above.",
+                                reply_markup=_level_keyboard(new_level),
+                                reply_to_message_id=cached_msg_id,
+                            )
+                            print(f"  -> Pointed to cached {new_level} response (msg_id={cached_msg_id})")
+                        except Exception as e:
+                            print(f"  Reply-pointer failed: {e}")
+                        continue
+
                     # Acknowledge the tap (Telegram shows toast briefly)
                     try:
                         tg_request("answerCallbackQuery", {
@@ -1859,7 +1932,9 @@ def main():
                         )
                         # Don't append to history a second time — just update last_*
                         session["last_context"] = context
-                        send_message(cb_chat, answer, reply_markup=_level_keyboard(new_level))
+                        msg_id = send_message(cb_chat, answer, reply_markup=_level_keyboard(new_level))
+                        if msg_id:
+                            session.setdefault("level_responses", {})[new_level] = msg_id
                         print(f"  -> Reformatted response sent ({len(answer)} chars) at {new_level}")
                         persist_emission(
                             cb_chat, last_q, answer,
@@ -2071,13 +2146,19 @@ def main():
                     # Update session
                     add_to_history(session, "user", text)
                     add_to_history(session, "assistant", answer)
+                    # Track new question — clear any prior per-level cache so the
+                    # next callback adjustment regenerates against the new query.
+                    if session.get("last_query") != text:
+                        session["level_responses"] = {}
                     session["last_query"] = text
                     session["last_context"] = context
                     import re as _re
                     session["last_topics"] = [w for w in _re.findall(r'\w+', text.lower())
                                               if w not in STOP_WORDS and len(w) > 2]
 
-                    send_message(chat_id, answer, reply_markup=_level_keyboard(session["answer_level"]))
+                    msg_id = send_message(chat_id, answer, reply_markup=_level_keyboard(session["answer_level"]))
+                    if msg_id:
+                        session["level_responses"][session["answer_level"]] = msg_id
                     print(f"  -> Response sent ({len(answer)} chars)")
                     print(f"  >> {answer[:300]}{'...' if len(answer) > 300 else ''}")
 
