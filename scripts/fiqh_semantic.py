@@ -64,6 +64,28 @@ QUERY_EXPANSIONS = {
     "ṭahārah": "purification cleanliness",
     "najis": "impurity",
     "najāsah": "impurity",
+    # Sacrifice / Udhiyya family — added 2026-06-01 after live qurban question
+    # surfaced that bge-m3 does not cross the qurban (Persian/Malay/Indonesian/
+    # Urdu loanword) ↔ udhiyya (Arabic) divide. Corpus already has udhiyya
+    # content in Nihayat tail chunks but stays unretrievable without expansion.
+    "qurban": "udhiyya sacrifice slaughter",
+    "qurbān": "udhiyya sacrifice slaughter",
+    "korban": "udhiyya sacrifice slaughter",
+    "udhiyya": "sacrifice slaughter",
+    "udhiyyah": "sacrifice slaughter",
+    "uḍḥiyya": "sacrifice slaughter",
+    "uḍḥiyyah": "sacrifice slaughter",
+    "udhiyah": "sacrifice slaughter",
+    "adahi": "sacrifices",
+    "aḍāḥī": "sacrifices",
+    "dhabh": "slaughter",
+    "ḏabḥ": "slaughter",
+    "dhabihah": "slaughtered animal",
+    "ḏabīḥah": "slaughtered animal",
+    "aqiqah": "birth sacrifice",
+    "ʿaqīqah": "birth sacrifice",
+    "hady": "sacrificial gift offering",
+    "hadī": "sacrificial gift offering",
 }
 
 

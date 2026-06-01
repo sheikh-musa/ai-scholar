@@ -996,6 +996,14 @@ CONCEPT_MAP = {
     frozenset(["fear", "allah"]): ["fear of Allah", "fears Allah", "taqwa", "God-fearing"],
     frozenset(["day", "judgment"]): ["day of resurrection", "day of judgement", "last day", "hereafter"],
     frozenset(["seeking", "knowledge"]): ["seeking knowledge", "path of knowledge", "learn", "scholar"],
+    # Udhiyya hair/nails Sunnah (Sahih Muslim 5119/5120, Abu Dawud 2791,
+    # Riyad al-Salihin 1706) — Umm Salama hadith. Triggers when user asks
+    # about the qurban-sponsor refraining from cutting hair/nails during
+    # Dhul-Hijjah. Surfaces the authoritative hadith proactively.
+    frozenset(["qurban", "hair"]): ["sacrifice", "udhiyya", "hair", "nails", "Dhul-Hijjah", "intends to sacrifice"],
+    frozenset(["qurban", "nails"]): ["sacrifice", "udhiyya", "hair", "nails", "Dhul-Hijjah", "intends to sacrifice"],
+    frozenset(["sacrifice", "hair"]): ["sacrifice", "udhiyya", "hair", "nails", "intends to sacrifice"],
+    frozenset(["udhiyya", "hair"]): ["sacrifice", "udhiyya", "hair", "nails", "intends to sacrifice"],
 }
 
 SYNONYM_MAP = {
@@ -1017,6 +1025,18 @@ SYNONYM_MAP = {
     "akhirah": ["hereafter", "afterlife", "next life", "day of judgment"],
     "dua": ["supplication", "pray", "invoke", "call upon"],
     "ilm": ["knowledge", "learn", "seeking knowledge"],
+    # Sacrifice / Udhiyya family — added 2026-06-01. Hadith FTS won't bridge
+    # qurban (Persian/Malay loanword) → udhiyya/sacrifice without an explicit
+    # synonym hop. Mirrors the expansion already in fiqh_semantic.QUERY_EXPANSIONS.
+    "qurban": ["sacrifice", "udhiyya", "slaughter", "hady", "offering"],
+    "qurbani": ["sacrifice", "udhiyya", "slaughter", "hady"],
+    "korban": ["sacrifice", "udhiyya", "slaughter"],
+    "udhiyya": ["sacrifice", "slaughter", "udhiyah"],
+    "udhiyah": ["sacrifice", "slaughter", "udhiyya"],
+    "adahi": ["sacrifices", "udhiyya"],
+    "dhabh": ["slaughter", "slaughtering", "slaughtered"],
+    "dhabihah": ["slaughtered animal", "sacrifice"],
+    "aqiqah": ["birth sacrifice", "newborn sacrifice"],
 }
 
 
@@ -1405,11 +1425,25 @@ def gather_context(question, meta=None):
         # Hadith FTS (always search if question wants it, or as supplement)
         # Gap A/B/C fix: use search_hadith_fts_v2 with collection + narrator preferences
         # and AND-mode multi-keyword search (with OR fallback if AND < 3 results).
+        # 2026-06-01: source-order words[:4] was dropping high-signal terms for
+        # compound questions ("sponsoring qurban for my infant son ... cutting
+        # nails and hair before slaughter" → words[:4]=['sponsoring','qurban',
+        # 'infant','son'], missing 'hair'/'nails'/'cutting' that the CONCEPT_MAP
+        # needs to fire). Sort by length descending as an information-content
+        # proxy (longer words = rarer = higher signal), then take 8. This still
+        # bounds OR-expansion size while preferring topical over grammatical tokens.
         has_hadith = any("HADITH" in p for p in context_parts)
         if not has_hadith and _ctx_size(context_parts) < MAX_CONTEXT:
             hlimit = 5 if wants_hadith else 3
+            # Length-sorted, deduped, top-8
+            seen_w = set()
+            ranked_words = []
+            for w in sorted(words, key=len, reverse=True):
+                if w not in seen_w:
+                    seen_w.add(w)
+                    ranked_words.append(w)
             data = search_hadith_fts_v2(
-                words[:4],
+                ranked_words[:8],
                 limit=hlimit,
                 preferred_collection_id=preferred_collection_id,
                 preferred_narrator=preferred_narrator,
