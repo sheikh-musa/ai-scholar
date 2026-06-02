@@ -112,8 +112,12 @@ const TAFSIR_PHRASES = [
  * Classify a user query into one of the INV-6 types.
  *
  * Priority when multiple patterns match:
- *   ruling > tafsir > madhhab-identification > language-clarification >
- *   biography > definition > other
+ *   ruling > tafsir > biography > madhhab-identification >
+ *   language-clarification > definition > other
+ *
+ * Biography precedes madhhab-identification (2026-06-02 fix) because
+ * madhhab founders share their names with their schools, and the bare
+ * MADHHAB_PHRASES regex would false-positive on "Imam al-Shāfiʿī".
  *
  * This priority encodes that "amanah risk" rises toward ruling — if we're
  * unsure between ruling and definition, we prefer the stricter classification
@@ -140,6 +144,23 @@ export function classifyQueryType(text: string): ClassificationResult {
     return { type: "tafsir", confidence: "high", matched };
   }
 
+  // Biography checked BEFORE madhhab-identification (2026-06-02). Madhhab
+  // founders share their names with their schools (Imam al-Shāfiʿī ↔ Shafi'i
+  // school; Imam Mālik ↔ Maliki; Abū Ḥanīfa ↔ Hanafi; Ibn Ḥanbal ↔ Hanbali),
+  // and the bare MADHHAB_PHRASES regex /(shafi|hanafi|...)/i was firing on
+  // the FOUNDER's name when the user clearly asked for a biography. The fix:
+  // biographical patterns ("tell me about Imam X", "who was X") are explicit
+  // signals of intent; if they fire, the query is a bio regardless of whether
+  // the imam's name overlaps with a school name. Comparison queries like
+  // "what do the Hanafis say" or "Shafi'i vs Hanafi" do NOT match biography
+  // patterns, so madhhab-identification still wins for those.
+  for (const p of BIOGRAPHY_PHRASES) {
+    if (p.test(text)) matched.push(`biography:${p.source.slice(0, 40)}`);
+  }
+  if (matched.some((m) => m.startsWith("biography:"))) {
+    return { type: "biography", confidence: "high", matched };
+  }
+
   for (const p of MADHHAB_PHRASES) {
     if (p.test(text)) matched.push(`madhhab:${p.source.slice(0, 40)}`);
   }
@@ -152,13 +173,6 @@ export function classifyQueryType(text: string): ClassificationResult {
   }
   if (matched.some((m) => m.startsWith("language:"))) {
     return { type: "language-clarification", confidence: "high", matched };
-  }
-
-  for (const p of BIOGRAPHY_PHRASES) {
-    if (p.test(text)) matched.push(`biography:${p.source.slice(0, 40)}`);
-  }
-  if (matched.some((m) => m.startsWith("biography:"))) {
-    return { type: "biography", confidence: "high", matched };
   }
 
   for (const p of DEFINITION_PHRASES) {

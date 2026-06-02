@@ -15,6 +15,13 @@ const cases: Array<[string, string]> = [
 
   ["Who is Imam Shafi'i?",                              "biography"],
   ["Tell me about the companion Abu Bakr",              "biography"],
+  // 2026-06-02: regression cases — madhhab founders share their names with
+  // their schools, so the bare MADHHAB_PHRASES regex was false-positiving
+  // on these. Fix: biography priority moved above madhhab-identification.
+  ["Tell me about Imam al-Shafi'i",                     "biography"],
+  ["Tell me about Imam Malik",                          "biography"],
+  ["Who was Abu Hanifa?",                               "biography"],
+  ["Tell me about Ibn Hanbal",                          "biography"],
 
   ["What does 'rahmah' mean in Arabic?",                "language-clarification"],
   ["How is 'bismillah' spelled?",                       "language-clarification"],
