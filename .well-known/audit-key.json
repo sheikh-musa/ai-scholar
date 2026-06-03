@@ -1,0 +1,7 @@
+{
+  "key_id": "al-bayan-audit-2026-06-03",
+  "algorithm": "Ed25519",
+  "public_key_b64": "MCowBQYDK2VwAyEATrOJEKWSzO0JRy76V+RKmXC+YAX+qj08HnjEZ5pITM4=",
+  "format": "spki-der-base64",
+  "generated_at": "2026-06-03T12:20:39.590Z"
+}
