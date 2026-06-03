@@ -11,7 +11,14 @@
 - ✅ Migrations 20260422_002 + 20260423_003 are **live in prod** (mizan_eval_* tables exist; ruling_audit_log + audit_key_registry + daily_attestations + mizan_retract_gate exist).
 - ✅ Producer side **active**: 27 rows in mizan_interactions, 27 matched rows in ruling_audit_log (hash-chain populated).
 - ❌ Consumer side **never fired**: audit_key_registry has 0 rows (signing key not generated), daily_attestations has 0 rows (nightly cron never run). The 27 chained rulings are accumulating un-attested.
-- ❌ Steps 2-4 + 6-7 of this runbook remain operator-action-required. The `audit_attestations` target is a **git repo** (`al-bayan/audit-attestations`), not a Postgres table — don't expect it as a `\d` result.
+
+**Verified state (2026-06-03, post-CAI-RESP-165 recovery):**
+- ✅ Audit signing keypair generated. Key ID `al-bayan-audit-2026-06-03` registered in `audit_key_registry`. Private key stored in `ai-scholar/.env` (`ORCHESTRATOR_AUDIT_SIGNING_KEY`, chmod 600). Public key at `.well-known/audit-key.json` committed to repo.
+- ✅ Recovery backfill: all **106 ruling_audit_log rows** (May 6 — June 2) now have signed Merkle-root attestations in `daily_attestations` (16 distinct dates). Marked with `git_commit_hash = 'RECOVERY-BACKFILL-2026-06-03'` so they're distinguishable from in-flight signing.
+- ✅ R6d health surface: `scripts/audit/check-attestation-health.ts` reports current status (HEALTHY / DEGRADED / BROKEN). `--strict` exits non-zero on R7 breach (any row >24h old without attestation). JSON shape ready for cc-orchestrator's `boot_briefing` ingestion per R5.
+- ❌ Forward cron **not yet installed** — operator action required (step 4 below). Today's row (2026-06-03 onward) accumulates un-attested until the launchd unit lands.
+- ❌ `al-bayan/audit-attestations` git repo **not yet created** on GitHub (step 3 below). Until then, the forward cron will write DB rows but skip the git-publish phase.
+- ❌ `.well-known/audit-key.json` **not yet hosted** at the Al-Bayan domain (step 2 below, operator hosting decision).
 
 ## Order of operations
 
@@ -38,15 +45,16 @@ And for hifz-companion (separate migrations dir):
 
 ### 2. Generate the INV-8 audit signing key
 
+**Status (2026-06-03):** ✅ Already done. Key ID `al-bayan-audit-2026-06-03` is registered and active. Private key stored in `ai-scholar/.env`. Public key file at `.well-known/audit-key.json` (committed).
+
+**Remaining operator action: host the public-key file.** Publish `.well-known/audit-key.json` at `https://al-bayan.{domain}/.well-known/audit-key.json` (or whatever public URL becomes Al-Bayan's verifiable origin) so any third-party verifier can fetch the public key to check attestation signatures.
+
+For rotation later:
 ```bash
 cd ~/wingmen/projects/ai-scholar
-npx tsx scripts/audit/generate-signing-key.ts --key-id al-bayan-audit-2026-04-23
+npx tsx scripts/audit/generate-signing-key.ts --key-id al-bayan-audit-YYYY-MM-DD
 ```
-
-This emits:
-- **Private key** (base64, PKCS8 DER) to stdout — **capture into a secret manager or the orchestrator's `.env` as `ORCHESTRATOR_AUDIT_SIGNING_KEY`**. Never commit, never paste in chat, never log in application code.
-- **Public key** to `.well-known/audit-key.json` — publish this file at `https://al-bayan.{domain}/.well-known/audit-key.json` so any third-party verifier can check attestation signatures.
-- **SQL INSERT** for `audit_key_registry` — run on orchestrator Supabase to register the public key.
+Then update `audit_key_registry` for the prior key (`valid_until = now()`, `rotation_reason = '<reason>'`).
 
 ### 3. Initialize the audit-attestations git repo
 
@@ -69,20 +77,57 @@ git push codeberg main
 
 ### 4. Schedule the nightly attestation cron (03:00 UTC)
 
-On the chosen host (currently orchestrator Mac Mini per ARCH-030; VPS when cutover):
+**Recommended path for the Mac Studio:** launchd .plist (since launchd already manages `dev.wingmen.mizan-bot`).
 
-```bash
-# /etc/crontab or equivalent
-0 3 * * * cd ~/wingmen/projects/ai-scholar && \
-  SUPABASE_URL=https://tscuymavysscrvoberrr.supabase.co \
-  SUPABASE_SERVICE_ROLE_KEY=<from vault> \
-  ORCHESTRATOR_AUDIT_SIGNING_KEY=<from vault> \
-  AUDIT_KEY_ID=al-bayan-audit-2026-04-23 \
-  AUDIT_REPO_PATH=/srv/audit-attestations \
-  npx tsx scripts/audit/publish-daily-attestation.ts >> /var/log/al-bayan-attestation.log 2>&1
+Create `~/Library/LaunchAgents/dev.wingmen.al-bayan-attestation.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.wingmen.al-bayan-attestation</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>cd /Users/sheikhmusa/wingmen/projects/ai-scholar && set -a && source .env && set +a && /usr/local/bin/npx -y tsx scripts/audit/publish-daily-attestation.ts</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/sheikhmusa</string>
+        <key>AUDIT_REPO_PATH</key>
+        <string>/srv/audit-attestations</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/sheikhmusa/wingmen/projects/ai-scholar/logs/al-bayan-attestation.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sheikhmusa/wingmen/projects/ai-scholar/logs/al-bayan-attestation.err</string>
+</dict>
+</plist>
 ```
 
-**Verify first run manually** before cron takes over. The log should show `attestation_date`, `row_count_end`, `root_hash`, and a fresh git commit hash pushed.
+`.env` is sourced inside the bash command and supplies `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ORCHESTRATOR_AUDIT_SIGNING_KEY`, `AUDIT_KEY_ID`. `AUDIT_REPO_PATH` comes from the plist's EnvironmentVariables (point this at your local clone of `al-bayan/audit-attestations` after step 3).
+
+Load:
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.wingmen.al-bayan-attestation.plist
+launchctl start dev.wingmen.al-bayan-attestation   # manual first run to verify
+tail -f logs/al-bayan-attestation.log
+```
+
+**Verify first run manually** before letting cron take over. The log should show `attestation_date`, `row_count_end`, `root_hash`, and (after step 3) a fresh git commit hash pushed to GitHub + Codeberg.
+
+**R7 boot gate:** add `npx tsx scripts/audit/check-attestation-health.ts --strict` to any pre-deploy or boot script that must fail loudly when the attestation chain falls behind. Returns exit 1 if any ruling_audit_log row >24h old has no daily_attestations cover.
 
 ### 5. Deploy the ask-scholar Edge Function with persistence wired
 
