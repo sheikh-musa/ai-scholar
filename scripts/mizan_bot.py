@@ -1859,22 +1859,78 @@ def _split_for_telegram(text: str, max_chars: int = 4000) -> list[str]:
     return parts
 
 
-def _level_keyboard(current_level):
-    """Inline keyboard for audience-tier adjustment. Context-aware:
+def _extract_cited_verses(text, max_verses=6):
+    """Pull (surah, ayah) tuples cited in a Mizan response. Looks for:
+      - (X:Y) parenthetical form
+      - Surah X, ayah Y (and Ayah Y) form
+      - bare X:Y inside markdown bold/italics
+    Deduplicates preserving first-seen order. Caps at max_verses to keep
+    the inline keyboard small (Telegram limit is 100 buttons but UX
+    breaks well before that — 6 keeps the keyboard scannable).
+
+    Validates ranges (1≤surah≤114, 1≤ayah≤286 for safety). Reject
+    out-of-range matches to avoid spurious citations from year numbers
+    or hadith numbers (e.g., "1990" isn't 1:990).
+    """
+    if not text:
+        return []
+    import re as _re
+    pattern = _re.compile(r"\((\d{1,3})\s*:\s*(\d{1,3})\)|(?:[Ss]ur[ai]h?\s+[\w؀-ۿ\s-]{1,30},?\s+[Aa]yah\s+(\d{1,3}))|\b(\d{1,3})\s*:\s*(\d{1,3})\b")
+    seen = set()
+    out = []
+    for m in pattern.finditer(text):
+        # group 1+2 = (X:Y); group 3 = ayah only after "Surah ..." (skip — no surah num); group 4+5 = bare X:Y
+        if m.group(1) and m.group(2):
+            s, a = int(m.group(1)), int(m.group(2))
+        elif m.group(4) and m.group(5):
+            s, a = int(m.group(4)), int(m.group(5))
+        else:
+            continue
+        if not (1 <= s <= 114) or not (1 <= a <= 286):
+            continue
+        key = (s, a)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+        if len(out) >= max_verses:
+            break
+    return out
+
+
+def _level_keyboard(current_level, cited_verses=None):
+    """Inline keyboard for audience-tier adjustment + audio recitation.
+    Level row (context-aware):
       layman   → [✓ Current: Layman] [🎓 More detail]
       seeker   → [👶 Simpler] [✓ Current: Seeker] [🎓 More detail]
       scholar  → [👶 Simpler] [✓ Current: Scholar]
     The "Current" button is informational (tapping it = keep, no re-ask).
     Simpler/Deeper buttons only appear when there's a direction to go.
+
+    Audio row(s) — optional. When cited_verses is a non-empty list of
+    (surah, ayah) tuples, render 🔊 buttons (max 3 per row, max 6 total).
+    Tap → bot sends voice message via sendVoice from EveryAyah CDN.
     """
-    buttons = []
+    level_buttons = []
     if current_level != "layman":
-        buttons.append({"text": "👶 Simpler", "callback_data": "level:layman" if current_level == "seeker" else "level:seeker"})
+        level_buttons.append({"text": "👶 Simpler", "callback_data": "level:layman" if current_level == "seeker" else "level:seeker"})
     current_label = current_level.capitalize()
-    buttons.append({"text": f"✓ Current: {current_label}", "callback_data": "level:keep"})
+    level_buttons.append({"text": f"✓ Current: {current_label}", "callback_data": "level:keep"})
     if current_level != "scholar":
-        buttons.append({"text": "🎓 More detail", "callback_data": "level:scholar" if current_level == "seeker" else "level:seeker"})
-    return {"inline_keyboard": [buttons]}
+        level_buttons.append({"text": "🎓 More detail", "callback_data": "level:scholar" if current_level == "seeker" else "level:seeker"})
+
+    rows = [level_buttons]
+
+    if cited_verses:
+        audio_buttons = [
+            {"text": f"🔊 {s}:{a}", "callback_data": f"audio:{s}:{a}"}
+            for s, a in cited_verses[:6]
+        ]
+        # Max 3 per row for readability
+        for i in range(0, len(audio_buttons), 3):
+            rows.append(audio_buttons[i:i + 3])
+
+    return {"inline_keyboard": rows}
 
 
 def send_message(chat_id, text, reply_markup=None, reply_to_message_id=None):
@@ -1978,13 +2034,51 @@ def main():
             for update in updates.get("result", []):
                 offset = update["update_id"] + 1
 
-                # --- Inline-keyboard callback for audience-tier adjustment ---
+                # --- Inline-keyboard callback for audience-tier + audio ---
                 cb = update.get("callback_query")
                 if cb:
                     cb_id = cb.get("id")
                     cb_data = cb.get("data", "")
                     cb_chat = (cb.get("message") or {}).get("chat", {}).get("id")
                     cb_user = cb.get("from", {}).get("first_name", "?")
+
+                    # Audio recitation: callback_data = "audio:<surah>:<ayah>"
+                    if cb_data.startswith("audio:"):
+                        try:
+                            _, s_str, a_str = cb_data.split(":", 2)
+                            s, a = int(s_str), int(a_str)
+                            if not (1 <= s <= 114 and 1 <= a <= 286):
+                                raise ValueError("range")
+                            audio_url = f"https://everyayah.com/data/Alafasy_128kbps/{s:03d}{a:03d}.mp3"
+                            # Ack first so the spinner clears
+                            try:
+                                tg_request("answerCallbackQuery", {
+                                    "callback_query_id": cb_id,
+                                    "text": f"🔊 Sending {s}:{a} (Alafasy)…",
+                                })
+                            except Exception:
+                                pass
+                            # sendAudio for MP3 (sendVoice requires OGG/Opus).
+                            # Telegram accepts remote URL strings for the file param.
+                            tg_request("sendAudio", {
+                                "chat_id": cb_chat,
+                                "audio": audio_url,
+                                "title": f"Qurʾān {s}:{a}",
+                                "performer": "Mishary Al-Afasy",
+                                "caption": f"📖 Qurʾān {s}:{a} — Mishary Al-Afasy (recitation)",
+                            })
+                            print(f"  -> Audio sent for {s}:{a}")
+                        except Exception as e:
+                            print(f"  Audio callback failed: {e}")
+                            try:
+                                tg_request("answerCallbackQuery", {
+                                    "callback_query_id": cb_id,
+                                    "text": "❌ Audio unavailable",
+                                })
+                            except Exception:
+                                pass
+                        continue
+
                     if not cb_chat or not cb_data.startswith("level:"):
                         # Ack with nothing if malformed
                         try:
@@ -2071,7 +2165,8 @@ def main():
                         )
                         # Don't append to history a second time — just update last_*
                         session["last_context"] = context
-                        msg_id = send_message(cb_chat, answer, reply_markup=_level_keyboard(new_level))
+                        cited = _extract_cited_verses(answer)
+                        msg_id = send_message(cb_chat, answer, reply_markup=_level_keyboard(new_level, cited_verses=cited))
                         if msg_id:
                             session.setdefault("level_responses", {})[new_level] = msg_id
                         print(f"  -> Reformatted response sent ({len(answer)} chars) at {new_level}")
@@ -2337,10 +2432,11 @@ def main():
                     session["last_topics"] = [w for w in _re.findall(r'\w+', text.lower())
                                               if w not in STOP_WORDS and len(w) > 2]
 
-                    msg_id = send_message(chat_id, answer, reply_markup=_level_keyboard(session["answer_level"]))
+                    cited = _extract_cited_verses(answer)
+                    msg_id = send_message(chat_id, answer, reply_markup=_level_keyboard(session["answer_level"], cited_verses=cited))
                     if msg_id:
                         session["level_responses"][session["answer_level"]] = msg_id
-                    print(f"  -> Response sent ({len(answer)} chars)")
+                    print(f"  -> Response sent ({len(answer)} chars, audio buttons: {len(cited)})")
                     print(f"  >> {answer[:300]}{'...' if len(answer) > 300 else ''}")
 
                     # AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135 — persist after send,
