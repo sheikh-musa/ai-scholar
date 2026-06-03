@@ -37,6 +37,102 @@ CLAUDE_PATH = os.path.expanduser("~/.local/bin/claude")
 # AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135
 PERSIST_FUNCTION_URL = SUPABASE_URL + "/functions/v1/persist-mizan-ruling"
 
+# --- User prefs (file-based for v0.1) ---
+# The mizan_user_prefs table migration is authored at
+# supabase/migrations/20260603_001_mizan_user_prefs.sql but not yet applied
+# (CLI db push blocked on migration history drift; apply via Studio SQL editor
+# or psql with the DB password when ready). File-based persistence covers
+# single-host launchd-managed bot until then. The on-disk JSON shape is the
+# same as the row shape, so the migration path later is a one-time backfill.
+import hashlib
+
+USER_PREFS_PATH = os.path.expanduser("~/.mizan_user_prefs.json")
+MADHHAB_VALID = ("shafii", "hanafi", "maliki", "hanbali")
+
+
+def _hash_telegram_id(telegram_id):
+    """sha256(str(telegram_id)) — matches the hashing done by persist-mizan-ruling
+    server-side. Used to key user prefs without storing raw telegram IDs."""
+    return hashlib.sha256(str(telegram_id).encode("utf-8")).hexdigest()
+
+
+def _load_user_prefs():
+    """Returns {telegram_id_hash: {"madhhab": str|None, "updated_at": str}}.
+    Empty dict if file missing. Fails-soft on any read error so a corrupt
+    file doesn't crash the bot."""
+    try:
+        with open(USER_PREFS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_user_prefs(prefs):
+    """Atomic write via temp file + rename. Fails-soft."""
+    try:
+        tmp = USER_PREFS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(prefs, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, USER_PREFS_PATH)
+        os.chmod(USER_PREFS_PATH, 0o600)
+    except OSError as e:
+        print(f"  _save_user_prefs failed: {e}")
+
+
+def get_user_madhhab(telegram_id):
+    """Returns madhhab string (shafii/hanafi/maliki/hanbali) or None."""
+    if telegram_id is None:
+        return None
+    h = _hash_telegram_id(telegram_id)
+    prefs = _load_user_prefs()
+    return (prefs.get(h) or {}).get("madhhab")
+
+
+def set_user_madhhab(telegram_id, madhhab):
+    """Set or clear (madhhab=None) a user's school preference."""
+    if telegram_id is None:
+        return
+    if madhhab is not None and madhhab not in MADHHAB_VALID:
+        raise ValueError(f"invalid madhhab: {madhhab!r}; valid: {MADHHAB_VALID}")
+    h = _hash_telegram_id(telegram_id)
+    prefs = _load_user_prefs()
+    if madhhab is None:
+        prefs.pop(h, None)
+    else:
+        prefs[h] = {"madhhab": madhhab, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    _save_user_prefs(prefs)
+
+
+MADHHAB_GUIDANCE = {
+    "shafii": (
+        "User follows the SHAFI'I school. When surfacing ikhtilaf on any "
+        "fiqh question, lead with the Shafi'i position and note divergences "
+        "from other schools. The retrieved fiqh corpus (Safīnat al-Najā, "
+        "Nihāyat al-Zayn) is already Shafi'i — surface it confidently."
+    ),
+    "hanafi": (
+        "User follows the HANAFI school. When surfacing ikhtilaf, lead with "
+        "the Hanafi position if available in retrieved evidence; if the "
+        "retrieved fiqh matn is Shafi'i (which it usually is — corpus gap), "
+        "explicitly flag the school mismatch and route the user to a Hanafi "
+        "scholar for the Hanafi-specific answer. Do NOT fabricate the "
+        "Hanafi position from parametric knowledge."
+    ),
+    "maliki": (
+        "User follows the MALIKI school. When surfacing ikhtilaf, lead with "
+        "the Maliki position if in retrieved evidence; otherwise flag the "
+        "school mismatch (retrieved fiqh matn is Shafi'i) and route to a "
+        "Maliki scholar. Do NOT fabricate the Maliki position from memory."
+    ),
+    "hanbali": (
+        "User follows the HANBALI school. When surfacing ikhtilaf, lead "
+        "with the Hanbali position if in retrieved evidence; otherwise "
+        "flag the school mismatch (retrieved fiqh matn is Shafi'i) and "
+        "route to a Hanbali scholar. Do NOT fabricate the Hanbali "
+        "position from memory."
+    ),
+}
+
 
 class RetrievalMeta:
     """Threads retrieval IDs through gather_context → persist_emission so the
@@ -1556,12 +1652,16 @@ LEVEL_GUIDANCE = {
 }
 
 
-def ask_claude(question, context, history=None, answer_level="seeker"):
+def ask_claude(question, context, history=None, answer_level="seeker", madhhab=None):
     """Use Claude Code CLI to reason over the context.
 
     answer_level: 'layman' | 'seeker' (default) | 'scholar' — controls audience-tier
-    guidance injected into the system prompt. Per-session preference adjustable via
-    Telegram inline keyboard buttons appended to every response.
+      guidance injected into the system prompt. Per-session preference adjustable via
+      Telegram inline keyboard buttons appended to every response.
+    madhhab: 'shafii' | 'hanafi' | 'maliki' | 'hanbali' | None — user's school
+      preference (via /madhhab). Injected as a MADHHAB GUIDANCE block telling the
+      LLM to lead with the user's school on ikhtilaf questions, AND to refuse to
+      fabricate non-Shafi'i positions when the corpus only carries Shafi'i matn.
     """
     history_block = ""
     if history:
@@ -1581,12 +1681,15 @@ def ask_claude(question, context, history=None, answer_level="seeker"):
         )
 
     level_block = LEVEL_GUIDANCE.get(answer_level, LEVEL_GUIDANCE["seeker"])
+    madhhab_block = ""
+    if madhhab and madhhab in MADHHAB_GUIDANCE:
+        madhhab_block = f"\nMADHHAB GUIDANCE (user's declared school):\n{MADHHAB_GUIDANCE[madhhab]}\n"
 
     prompt = f"""You are Mizan (Al-Bayan), an Islamic knowledge assistant. A user asked:
 
 "{question}"
 {history_block}
-{level_block}
+{level_block}{madhhab_block}
 
 (The AUDIENCE TIER guidance above takes precedence over the RULES below on the
 same topic — e.g., if AUDIENCE TIER says "skip verbatim matn unless directly
@@ -1959,10 +2062,12 @@ def main():
                         send_typing(cb_chat)
                         retrieval_meta = RetrievalMeta()
                         context = gather_context(last_q, meta=retrieval_meta)
+                        cb_telegram_id = cb.get("from", {}).get("id")
                         answer = ask_claude(
                             last_q, context,
                             session["history"] if session["history"] else None,
                             answer_level=new_level,
+                            madhhab=get_user_madhhab(cb_telegram_id),
                         )
                         # Don't append to history a second time — just update last_*
                         session["last_context"] = context
@@ -2051,7 +2156,10 @@ def main():
                         "• *Special:* 40 Nawawi · Riyad al-Salihin\n\n"
                         "*Transparency tiers:*\n"
                         "📖 Quoted · 📝 Paraphrased · 💭 AI-Generated\n"
-                        "✅ Sahih · ⚠️ Hasan · ❌ Da'if"
+                        "✅ Sahih · ⚠️ Hasan · ❌ Da'if\n\n"
+                        "*Personalization:*\n"
+                        "• `/madhhab shafii|hanafi|maliki|hanbali` — set your school for ikhtilaf re-ranking\n"
+                        "• `/madhhab` — show current preference"
                     )
                     print("  -> /help response sent")
                     continue
@@ -2060,6 +2168,42 @@ def main():
                     sessions.pop(chat_id, None)
                     send_message(chat_id, "🔄 Conversation cleared. Ask me anything fresh.")
                     print("  -> /clear response sent")
+                    continue
+
+                # /madhhab — set or query user's school preference
+                if text.startswith("/madhhab"):
+                    parts = text.split()
+                    telegram_id = update.get("message", {}).get("from", {}).get("id")
+                    if len(parts) == 1:
+                        # Show current + menu
+                        current = get_user_madhhab(telegram_id)
+                        send_message(chat_id,
+                            f"*Your school (madhhab):* `{current or 'not set (Shafi-i default)'}`\n\n"
+                            "Set with one of:\n"
+                            "• `/madhhab shafii`\n"
+                            "• `/madhhab hanafi`\n"
+                            "• `/madhhab maliki`\n"
+                            "• `/madhhab hanbali`\n"
+                            "• `/madhhab clear` — remove preference\n\n"
+                            "_When set, I'll lead with your school's position on ikhtilaf questions._\n"
+                            "_Note: my fiqh matn corpus is currently Shafi-i only — for non-Shafi-i users I'll flag school mismatches and route to a qualified scholar of your school rather than fabricate positions from memory._"
+                        )
+                    else:
+                        arg = parts[1].lower().strip()
+                        if arg == "clear":
+                            set_user_madhhab(telegram_id, None)
+                            send_message(chat_id, "✓ Madhhab preference cleared. I'll surface evidence without school-specific routing.")
+                        elif arg in MADHHAB_VALID:
+                            set_user_madhhab(telegram_id, arg)
+                            send_message(chat_id,
+                                f"✓ Madhhab set to *{arg.capitalize()}*.\n\n"
+                                f"_From now on, ikhtilaf-class questions will lead with the {arg.capitalize()} position when retrievable._"
+                            )
+                        else:
+                            send_message(chat_id,
+                                f"❌ Unknown school: `{arg}`. Valid: shafii, hanafi, maliki, hanbali, clear."
+                            )
+                    print(f"  -> /madhhab handled (arg={parts[1] if len(parts) > 1 else 'show'})")
                     continue
 
                 # Scholar gate — fires on ruling-class queries (halal/haram/fatwa)
@@ -2169,12 +2313,15 @@ def main():
                         print("  Gathering context...")
                         context = gather_context(text, meta=retrieval_meta)
 
-                    print(f"  Asking Claude... (level={session['answer_level']})")
+                    msg_telegram_id = update.get("message", {}).get("from", {}).get("id")
+                    user_madhhab = get_user_madhhab(msg_telegram_id)
+                    print(f"  Asking Claude... (level={session['answer_level']}, madhhab={user_madhhab or 'none'})")
                     send_typing(chat_id)
                     answer = ask_claude(
                         text, context,
                         session["history"] if session["history"] else None,
                         answer_level=session["answer_level"],
+                        madhhab=user_madhhab,
                     )
 
                     # Update session
