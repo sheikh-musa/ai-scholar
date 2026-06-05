@@ -1721,7 +1721,12 @@ RULES:
   hadith — never abbreviate the matn integrals.
 - Include Arabic text when showing Quranic verses.
 - End with a reflective question (practice off-ramp) to move knowledge toward action.
-- If the data doesn't answer the question, say so honestly.
+- If the data doesn't answer the question, say so directly — but state the
+  gap as a fact, not a confession. Do NOT open with self-conscious framing
+  like "I have to be honest with you upfront", "I'll be transparent", "let
+  me be honest", or similar performative-honesty preambles. Just state what
+  the retrieved evidence covers and what it doesn't, then proceed. The
+  honesty is in the structure of the answer, not in narrating it.
 - When quoting a tafsir passage, append `[<Tier>: <scholar>, <source>]` verbatim.
 
 FORMATTING (Telegram Markdown):
