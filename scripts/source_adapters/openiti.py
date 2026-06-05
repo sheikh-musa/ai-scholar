@@ -36,8 +36,13 @@ def _parse_meta_block(raw: str) -> tuple[dict, str]:
     body_lines: list = []
     in_header = False
     saw_magic = False
+    # Strip UTF-8 BOM (some OpenITI sources — e.g. Sham19 editions like
+    # 0428AbuHusaynQuduri — ship with a leading ﻿ that prevents the
+    # magic-line equality check below from matching).
+    if raw and raw[0] == "﻿":
+        raw = raw[1:]
     for line in raw.splitlines():
-        if line.strip() == "######OpenITI#":
+        if line.strip().lstrip("﻿") == "######OpenITI#":
             saw_magic = True
             in_header = True
             continue

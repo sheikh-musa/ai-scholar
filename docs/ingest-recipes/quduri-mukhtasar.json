@@ -1,0 +1,25 @@
+{
+  "manifest_label": "quduri-mukhtasar-2026-06-05",
+  "target_corpus_label": "Mukhtaṣar al-Qudūrī (Abū al-Ḥusayn al-Qudūrī, ḥanafī mukhtaṣar — foundational Hanafi primer)",
+  "sources": [
+    {
+      "adapter": "openiti",
+      "text_uri": "0428AbuHusaynQuduri.Mukhtasar",
+      "edition_uri": "Sham19Y0124336-ara1"
+    }
+  ],
+  "attestation": {
+    "require_cross_attest": false,
+    "primary_source_idx": 0
+  },
+  "juridical_text": {
+    "text_name": "Mukhtaṣar al-Qudūrī",
+    "baab_or_section": "Full work",
+    "baab_order": 20,
+    "author_name": "Abū al-Ḥusayn Aḥmad ibn Muḥammad al-Qudūrī al-Ḥanafī",
+    "author_death_hijri": 428,
+    "author_death_gregorian": 1037,
+    "madhab": "hanafi",
+    "dalil_strength": "primer_juridical"
+  }
+}
