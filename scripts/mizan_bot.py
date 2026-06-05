@@ -2033,6 +2033,30 @@ def main():
     print("Removing webhook for long polling...")
     tg_request("deleteWebhook")
 
+    # Register slash-commands so they appear in the Telegram menu button
+    # (the blue circle next to the message input). Tapping it shows this
+    # list; typing "/" also autocompletes from it.
+    # Idempotent — setMyCommands replaces the prior list each call.
+    print("Registering slash-commands...")
+    try:
+        tg_request("setMyCommands", {
+            "commands": [
+                {"command": "start",   "description": "Welcome + how to use the bot"},
+                {"command": "help",    "description": "Query types, library, transparency tiers"},
+                {"command": "madhhab", "description": "Set school (shafii/hanafi/maliki/hanbali)"},
+                {"command": "clear",   "description": "Reset conversation context"},
+            ]
+        })
+        # Also set the chat menu button to type='commands' so the bottom-left
+        # button explicitly opens the commands list (default behavior, but
+        # be explicit so any prior override is reset).
+        tg_request("setChatMenuButton", {
+            "menu_button": {"type": "commands"}
+        })
+        print("  commands registered: /start /help /madhhab /clear")
+    except Exception as e:
+        print(f"  warning: command registration failed: {e}")
+
     # Verify claude CLI
     try:
         result = subprocess.run([CLAUDE_PATH, "--version"], capture_output=True, text=True, timeout=5)
