@@ -1100,6 +1100,31 @@ CONCEPT_MAP = {
     frozenset(["qurban", "nails"]): ["sacrifice", "udhiyya", "hair", "nails", "Dhul-Hijjah", "intends to sacrifice"],
     frozenset(["sacrifice", "hair"]): ["sacrifice", "udhiyya", "hair", "nails", "intends to sacrifice"],
     frozenset(["udhiyya", "hair"]): ["sacrifice", "udhiyya", "hair", "nails", "intends to sacrifice"],
+    # After-meal du'ā (Abu Dawud 4023 — Mu'adh ibn Anas — "If anyone eats
+    # food and then says: 'Praise be to Allah Who has fed me with this
+    # food and provided me'..."). Triggers when user asks about post-meal
+    # supplication. Bridge phrases the hadith uses ("fed me", "provided
+    # me", "praise be to Allah", "food") to the user's phrasing.
+    # Added 2026-06-05 after live-test miss surfaced this exact gap.
+    frozenset(["supplication", "eating"]): ["praise be to Allah", "fed me", "provided me", "food", "Allah Who has fed"],
+    frozenset(["supplication", "meal"]): ["praise be to Allah", "fed me", "provided me", "food", "Allah Who has fed"],
+    frozenset(["supplication", "food"]): ["praise be to Allah", "fed me", "provided me", "food", "Allah Who has fed"],
+    frozenset(["dua", "eating"]): ["praise be to Allah", "fed me", "provided me", "food"],
+    frozenset(["dua", "meal"]): ["praise be to Allah", "fed me", "provided me", "food"],
+    frozenset(["dua", "food"]): ["praise be to Allah", "fed me", "provided me", "food"],
+    # Combining prayers (jam' al-salatayn) — Sunan an-Nasa'i 597, Sahih
+    # Muslim 705 (Ibn 'Abbas, Mu'adh ibn Jabal). User asks about
+    # jam' taqdīm / jam' taʾkhīr — the corpus has the hadiths under
+    # "combined his prayer while traveling" phrasing which the user's
+    # transliterated jama doesn't surface against. Bridge the gap.
+    # Added 2026-06-05 after the "jama' takhir" live-test false-friended
+    # against "gather your guile" tafsir and tartib-within-a-prayer matn.
+    frozenset(["jama", "prayer"]): ["combined", "combine", "two prayers", "traveling", "Zuhr Asr", "Maghrib Isha"],
+    frozenset(["jama", "salah"]): ["combined", "combine", "two prayers", "traveling"],
+    frozenset(["jama", "takhir"]): ["combined", "delayed", "two prayers", "traveling"],
+    frozenset(["jama", "taqdim"]): ["combined", "advance", "two prayers", "traveling"],
+    frozenset(["combining", "prayers"]): ["combined", "combine", "two prayers", "traveling"],
+    frozenset(["combine", "prayers"]): ["combined", "two prayers", "traveling", "Zuhr Asr"],
 }
 
 SYNONYM_MAP = {
@@ -1133,6 +1158,14 @@ SYNONYM_MAP = {
     "dhabh": ["slaughter", "slaughtering", "slaughtered"],
     "dhabihah": ["slaughtered animal", "sacrifice"],
     "aqiqah": ["birth sacrifice", "newborn sacrifice"],
+    # Combining prayers (jam'/jamʿ + taqdīm/taʾkhīr) — see also CONCEPT_MAP
+    # entries above. Without these individual-word expansions, "jama"
+    # surfaces against gather/assembly (ج-م-ع root) tafsir false-friends.
+    # Added 2026-06-05.
+    "jama": ["combine", "combined", "combining", "two prayers"],
+    "jam": ["combine", "combined", "combining", "two prayers"],
+    "takhir": ["delayed", "later prayer"],
+    "taqdim": ["advance", "earlier prayer"],
 }
 
 
