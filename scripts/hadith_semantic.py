@@ -52,11 +52,37 @@ def _encode(query: str) -> Optional[list]:
         return None
 
 
+def _rerank(query: str, passages: list, timeout: float = 30.0) -> Optional[list]:
+    """Call bge-reranker-v2-m3 to get query×passage relevance scores.
+
+    Returns list of float scores aligned with passages, or None on failure.
+    Reranker fixes the query-document asymmetry that bge-m3 single-vector
+    embedding suffers from (e.g. user asks 'supplication after eating',
+    hadith says 'praise be to Allah who has fed me' — different surface
+    but reranker scores them as relevant pair).
+    """
+    if not passages:
+        return []
+    try:
+        r = _http(
+            "POST",
+            f"{ENCODER_URL}/rerank",
+            {"query": query, "passages": passages},
+            {"Content-Type": "application/json"},
+            timeout=timeout,
+        )
+        return r["scores"]
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, KeyError, TypeError):
+        return None
+
+
 def search_semantic(
     query: str,
     limit: int = 5,
     collection_name: Optional[str] = None,
-    min_score: float = 0.45,
+    min_score: float = 0.35,
+    rerank: bool = True,
+    candidate_pool: int = 30,
 ) -> dict:
     """Server-side cosine top-K via search_hadith_semantic RPC.
 
@@ -73,12 +99,21 @@ def search_semantic(
     if qvec is None:
         return {"results": []}
 
+    # Wide-net first pass via bge-m3 semantic (top-N candidates).
+    # Always apply semantic min_score as the NOISE FILTER — the reranker
+    # is only good at ordering, not at absolute "is this even relevant"
+    # scoring. Without this, queries with no real corpus matches (Malay
+    # code-switch, hyper-niche topics) get reordered noise back instead
+    # of an empty result set. The reranker then reorders the survivors.
+    fetch_count = candidate_pool if rerank else limit
+    fetch_min   = min_score
+
     try:
         payload = {
             "query_embedding": qvec,
-            "match_count": limit,
+            "match_count": fetch_count,
             "collection_filter": collection_name,
-            "min_score": min_score,
+            "min_score": fetch_min,
         }
         headers = {
             "apikey": SUPABASE_KEY,
@@ -91,6 +126,29 @@ def search_semantic(
 
     if not rows:
         return {"results": []}
+
+    # Reranker pass: bge-reranker-v2-m3 scores (query, passage) pairs
+    # directly, fixing the query-document asymmetry that single-vector
+    # bge-m3 stumbles on (e.g. "supplication after eating" → "praise be
+    # to Allah who has fed me"). If rerank fails (encoder down, etc.)
+    # we fall through to the semantic-only ordering.
+    if rerank:
+        passages = [(r.get("english_text") or "")[:1500] for r in rows]
+        scores = _rerank(query, passages)
+        if scores is not None and len(scores) == len(rows):
+            # Combine: 60% rerank + 40% semantic. Preserves semantic's
+            # cross-lingual strength while letting reranker fix the
+            # query-document asymmetry on direct-match queries. Pure
+            # rerank-replace lost cross-lingual queries entirely (the
+            # Malay haid mushaf case) because the reranker drops the
+            # cross-lingual signal that bge-m3 captures.
+            for r, s in zip(rows, scores):
+                sem_score = r["score"]
+                r["score"] = 0.6 * float(s) + 0.4 * sem_score
+            rows.sort(key=lambda r: r["score"], reverse=True)
+        rows = rows[:limit]
+    else:
+        rows = rows[:limit]
 
     results = []
     for r in rows:

@@ -41,18 +41,36 @@ def _encode(query):
         return None
 
 
-def search_semantic(query, limit=5, scholar_name=None, min_score=0.45):
+def _rerank(query, passages, timeout=30.0):
+    if not passages:
+        return []
+    try:
+        r = _http(
+            "POST",
+            f"{ENCODER_URL}/rerank",
+            {"query": query, "passages": passages},
+            {"Content-Type": "application/json"},
+            timeout=timeout,
+        )
+        return r["scores"]
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, KeyError, TypeError):
+        return None
+
+
+def search_semantic(query, limit=5, scholar_name=None, min_score=0.35, rerank=True, candidate_pool=30):
     """Returns {"results": [{tafsir_entry_id, ayah_id, scholar_name, source_work,
                              english_text, arabic_text, output_tier, rank}, ...]}."""
     qvec = _encode(query)
     if qvec is None:
         return {"results": []}
+    fetch_count = candidate_pool if rerank else limit
+    fetch_min   = min_score  # always apply as noise filter
     try:
         payload = {
             "query_embedding": qvec,
-            "match_count": limit,
+            "match_count": fetch_count,
             "scholar_filter": scholar_name,
-            "min_score": min_score,
+            "min_score": fetch_min,
         }
         headers = {
             "apikey": SUPABASE_KEY,
@@ -64,6 +82,18 @@ def search_semantic(query, limit=5, scholar_name=None, min_score=0.45):
         return {"results": []}
     if not rows:
         return {"results": []}
+    if rerank:
+        passages = [(r.get("english_text") or "")[:1500] for r in rows]
+        scores = _rerank(query, passages)
+        if scores is not None and len(scores) == len(rows):
+            # 60% rerank + 40% semantic — see hadith_semantic comment.
+            for r, s in zip(rows, scores):
+                sem_score = r["score"]
+                r["score"] = 0.6 * float(s) + 0.4 * sem_score
+            rows.sort(key=lambda r: r["score"], reverse=True)
+        rows = rows[:limit]
+    else:
+        rows = rows[:limit]
     results = []
     for r in rows:
         results.append({
