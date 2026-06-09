@@ -8,6 +8,12 @@ const cases: Array<[string, string]> = [
   ["Is it halal to pay interest on a student loan?",   "ruling"],
   ["Can I eat at a non-halal certified restaurant?",    "ruling"],
   ["Ruling on celebrating birthdays",                   "ruling"],
+  // 2026-06-10: third-person obligation cases — were classified 'other'
+  // because only first-person "must i" / "do i have to" were covered.
+  ["Must a woman return her mahr if she initiated the divorce?", "ruling"],
+  ["Does the husband have to pay for separate housing?",         "ruling"],
+  ["Is she required to fast the missed days before next Ramadan?", "ruling"],
+  ["Are they allowed to combine prayers while travelling?",        "ruling"],
 
   ["What is the meaning of tawakkul?",                  "definition"],
   ["Define ijma",                                       "definition"],

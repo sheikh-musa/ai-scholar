@@ -47,6 +47,16 @@ const RULING_PHRASES = [
   /what\s+is\s+the\s+punishment\s+for/i,
   /must\s+i/i,
   /is\s+it\s+permissible/i,
+  // Third-person obligation: the bare "must i" / "do i have to" patterns above
+  // only catch first-person phrasing. Users routinely ask the verdict about a
+  // third party — "must a woman return her mahr", "does the husband have to
+  // pay", "is she required to fast". These are ruling-class (a personal
+  // consequence is being sought) and were classified 'other' pre-2026-06-10.
+  /\bmust\s+(i|we|you|she|he|they|one|a|an|the|every|each|both|either)\b/i,
+  /\b(she|he|they|one|a\s+\w+|an\s+\w+|the\s+\w+)\s+(has\s+to|have\s+to|needs?\s+to|is\s+(required|obliged|obligated|entitled|allowed|permitted)\s+to|are\s+(required|obliged|obligated|entitled|allowed|permitted)\s+to)\b/i,
+  // Inverted-question obligation: "is she required to", "are they allowed to",
+  // "does he have to" — auxiliary precedes the third-person subject.
+  /\b(is|are|does|do|was|were)\s+(i|we|you|she|he|they|one|a|an|the|every|each)\b.{0,30}?\b(required|obliged|obligated|entitled|allowed|permitted|supposed|expected|have\s+to|has\s+to|need(s)?\s+to)\s+to?\b/i,
   // Broader "can/should I ..." patterns without requiring "in Islam" suffix
   // (added 2026-05-27 after self-test showed "can i marry a non-muslim" classified as 'other')
   /can\s+i\s+(get\s+)?(marr|divorc|combine|wear|eat|drink|trade|sell|buy|invest|listen|watch|use)/i,
