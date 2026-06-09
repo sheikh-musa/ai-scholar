@@ -27,6 +27,8 @@ import signal
 # ruling — lifts the freeze marker once shipped + validated.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fiqh_semantic  # noqa: E402
+import hadith_semantic  # noqa: E402 — bge-m3 + bge-reranker-v2-m3 path
+import tafsir_semantic  # noqa: E402
 
 # --- Config ---
 BOT_TOKEN = os.environ.get("MIZAN_BOT_TOKEN", "")
@@ -1535,19 +1537,68 @@ def gather_context(question, meta=None):
         # than the ayah translation).
         if _ctx_size(context_parts) < MAX_CONTEXT:
             tdata = search_tafsir(fts_query, limit=5)
-            if tdata["results"]:
+
+            # HYBRID supplement: semantic-rerank tafsir, same head-to-head
+            # logic as hadith path. FTS retains the matched_passage F-2
+            # anchor (audit row); semantic broadens retrieval to topical /
+            # paraphrased queries FTS misses (ayat al-kursi, al-rahman,
+            # musa Sinai — all 100% miss in FTS, 1/3 top-1 hits in
+            # semantic-rerank).
+            try:
+                tsem = tafsir_semantic.search_semantic(question, limit=5)
+            except Exception as e:
+                print(f"  tafsir semantic failed (fallthrough to FTS): {e}")
+                tsem = {"results": []}
+
+            # Dedupe by tafsir_entry_id where present, else by (scholar,
+            # surah, ayah). FTS rows have ayah_id; semantic rows have
+            # tafsir_entry_id + ayah_id.
+            merged = []
+            seen_keys = set()
+            for src, rows in (("fts", tdata["results"]), ("sem", tsem["results"])):
+                for r in rows:
+                    eid = r.get("tafsir_entry_id")
+                    key = eid or (r.get("scholar") or r.get("scholar_name"),
+                                  r.get("surah") or r.get("ayah_id"),
+                                  r.get("ayah"))
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    # Normalize semantic rows to the FTS shape so downstream
+                    # rendering doesn't have to branch.
+                    if src == "sem":
+                        r = {
+                            "ayah_id": r.get("ayah_id"),
+                            "surah": "(unknown)",  # semantic RPC doesn't carry surah/ayah numbers
+                            "ayah": "?",
+                            "arabic": r.get("arabic_text"),
+                            "english_translation": None,
+                            "scholar": r.get("scholar_name"),
+                            "source": r.get("source_work"),
+                            "english_text": r.get("english_text", ""),
+                            "tier": r.get("output_tier"),
+                            "_retrieval_via": "sem",
+                        }
+                    else:
+                        r = dict(r)
+                        r["_retrieval_via"] = "fts"
+                    merged.append(r)
+
+            merged = merged[:10]
+            if merged:
                 if meta is not None:
-                    meta.add_tafsir_hits(tdata["results"])
+                    meta.add_tafsir_hits(merged)
                 entries = []
-                for hit in tdata["results"]:
+                for hit in merged:
+                    via = hit.get("_retrieval_via", "fts")
                     entries.append(
-                        f"Surah {hit['surah']} : Ayah {hit['ayah']}\n"
-                        f"Scholar: {hit['scholar']} ({hit['source']})\n"
-                        f"Tier: {hit['tier']}\n"
-                        f"Passage: {hit['english_text']}"
+                        f"Surah {hit.get('surah','?')} : Ayah {hit.get('ayah','?')}  [via {via}]\n"
+                        f"Scholar: {hit.get('scholar','?')} ({hit.get('source','?')})\n"
+                        f"Tier: {hit.get('tier','?')}\n"
+                        f"Passage: {hit.get('english_text','')}"
                     )
                 context_parts.append(
-                    "TAFSIR MATCHED PASSAGES (scholar-attributed, from tafsir_entries FTS):\n"
+                    "TAFSIR MATCHED PASSAGES (scholar-attributed, FTS+semantic union):\n"
                     + "\n\n".join(entries)
                 )
 
@@ -1564,25 +1615,76 @@ def gather_context(question, meta=None):
         has_hadith = any("HADITH" in p for p in context_parts)
         if not has_hadith and _ctx_size(context_parts) < MAX_CONTEXT:
             hlimit = 5 if wants_hadith else 3
-            # Length-sorted, deduped, top-8
+            # Length-sorted, deduped, top-8 — for the FTS+SYNONYM path
             seen_w = set()
             ranked_words = []
             for w in sorted(words, key=len, reverse=True):
                 if w not in seen_w:
                     seen_w.add(w)
                     ranked_words.append(w)
-            data = search_hadith_fts_v2(
+
+            # HYBRID: union of FTS+SYNONYM and semantic-rerank paths.
+            # Per 14-query head-to-head test (2026-06-10, commit bb35a3f):
+            #   FTS alone:           top-1=21%  top-3=43%  miss=8/14
+            #   Semantic v3 (rerank): top-1=50%  top-3=71%  miss=4/14
+            # The two paths fail on different queries, so the union
+            # is strictly better than either alone:
+            #   - FTS catches surface-token-precise queries semantic loses
+            #     (e.g. "afdhal supplication after eating" → Abu Dawud
+            #     #4023, semantic doesn't bridge "supplication" ↔
+            #     "praise be to Allah who has fed me")
+            #   - Semantic catches paraphrased / cross-lingual / topic
+            #     queries FTS loses (Malay haid mushaf, tafsir, envy)
+            # Dedupe key: (collection, hadith_number).
+            fts_data = search_hadith_fts_v2(
                 ranked_words[:8],
                 limit=hlimit,
                 preferred_collection_id=preferred_collection_id,
                 preferred_narrator=preferred_narrator,
                 mode="auto",
             )
-            if data["results"]:
+            try:
+                sem_data = hadith_semantic.search_semantic(question, limit=hlimit)
+            except Exception as e:
+                print(f"  hadith semantic failed (fallthrough to FTS): {e}")
+                sem_data = {"results": []}
+
+            # Merge: dedupe on (collection, hadith_number); preserve order
+            # of FIRST occurrence (FTS first because its synonym-precision
+            # wins on the cases where it's better; semantic supplements).
+            # Mark which path(s) surfaced each hit for downstream debugging.
+            merged = []
+            seen_keys = set()
+            for src, rows in (("fts", fts_data["results"]), ("sem", sem_data["results"])):
+                for r in rows:
+                    key = (str(r.get("collection") or "").lower(),
+                           str(r.get("hadith_number") or ""))
+                    if key in seen_keys:
+                        # Already in merged from the other path — mark as both
+                        for existing in merged:
+                            existing_key = (str(existing.get("collection") or "").lower(),
+                                            str(existing.get("hadith_number") or ""))
+                            if existing_key == key:
+                                existing.setdefault("_paths", set()).add(src)
+                        continue
+                    seen_keys.add(key)
+                    r2 = dict(r)
+                    r2["_paths"] = {src}
+                    merged.append(r2)
+            # Cap total — keep all union hits up to 2x limit (allows the
+            # claude prompt to see both authoritative + supplementary)
+            merged = merged[: max(hlimit * 2, 5)]
+
+            if merged:
                 if meta is not None:
-                    meta.add_hadith_hits(data["results"])
+                    meta.add_hadith_hits(merged)
+                # Tag each hit's source path for visibility in the prompt
+                for r in merged:
+                    paths = sorted(r.pop("_paths", set()))
+                    r["_retrieval_via"] = "+".join(paths) if len(paths) > 1 else paths[0]
                 label = "HADITH SEARCH" if wants_hadith else "RELATED HADITHS"
-                context_parts.append(f"{label}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
+                payload = {"results": merged}
+                context_parts.append(f"{label}:\n{json.dumps(payload, ensure_ascii=False, indent=2)}")
 
     # Shafi'i fiqh substrate — retrieve-only echo per C4 + INV-7 gate.
     # 2026-05-19: dropped match_fiqh_query() keyword gate. bge-m3 semantic
