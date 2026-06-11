@@ -86,6 +86,17 @@ QUERY_EXPANSIONS = {
     "ʿaqīqah": "birth sacrifice",
     "hady": "sacrificial gift offering",
     "hadī": "sacrificial gift offering",
+    # Sujūd al-sahw family — added 2026-06-11 after a live "how to do sujud
+    # sahwi" question retrieved general-ṣalāh arkān chunks instead of the sahw
+    # faṣl. The corpus HAS the sahw section (Safīnat chunks 11-12, plus Nihāyat
+    # / Qudūrī), but "sujud sahwi" sits in a tight 0.52-0.55 cosine band against
+    # the dense general-prostration content, so the sahw faṣl loses Safīnat's
+    # single diversified slot. Expansion (intersection-only with the translation
+    # vocabulary) lifts the sahw chunks to rank-1 across all three matns.
+    "sahw": "sajdah sahw prostration of forgetfulness omitted sunnah abʿaḍ tashahhud qunut doubt rakah",
+    "sahwi": "sajdah sahw prostration of forgetfulness omitted sunnah abʿaḍ tashahhud qunut doubt rakah",
+    "sahwa": "sajdah sahw prostration of forgetfulness omitted sunnah abʿaḍ tashahhud qunut doubt rakah",
+    "sahu": "sajdah sahw prostration of forgetfulness omitted sunnah abʿaḍ tashahhud qunut doubt rakah",
 }
 
 

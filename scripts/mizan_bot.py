@@ -1168,6 +1168,13 @@ SYNONYM_MAP = {
     "jam": ["combine", "combined", "combining", "two prayers"],
     "takhir": ["delayed", "later prayer"],
     "taqdim": ["advance", "earlier prayer"],
+    # Sujūd al-sahw — added 2026-06-11. FTS fallback for the prostration of
+    # forgetfulness; mirrors fiqh_semantic.QUERY_EXPANSIONS. Without the hop
+    # "sahwi" misses the "sajdah sahw" / abʿāḍ enumeration in the matn.
+    "sahw": ["sajdah sahw", "prostration of forgetfulness", "abʿaḍ", "omitted sunnah", "tashahhud"],
+    "sahwi": ["sajdah sahw", "prostration of forgetfulness", "abʿaḍ", "omitted sunnah", "tashahhud"],
+    "sahwa": ["sajdah sahw", "prostration of forgetfulness", "abʿaḍ", "omitted sunnah"],
+    "sahu": ["sajdah sahw", "prostration of forgetfulness", "abʿaḍ", "omitted sunnah"],
 }
 
 
