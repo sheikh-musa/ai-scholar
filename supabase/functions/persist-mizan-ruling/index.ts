@@ -68,6 +68,9 @@ interface PersistMizanRequest {
   // F-2 (tafsir-defense-funnel): top tafsir-FTS hit's ayah_id when retrieval
   // included tafsir matches, else null. NEVER omitted from the audit row.
   matched_passage_id?: string | null;
+  // CAI-RESP-220: retrieval-substrate config for reproducibility. Optional —
+  // absent on pre-update callers; stored as null then.
+  retrieval_config?: Record<string, unknown> | null;
   scholar_of_record?: string | null;
   retraction_of?: string | null;
 }
@@ -125,6 +128,7 @@ Deno.serve(async (req) => {
     output_tier,
     retrieval_ids: body.retrieval_ids ?? [],
     matched_passage_id: body.matched_passage_id ?? null,
+    retrieval_config: body.retrieval_config ?? null,
     scholar_of_record: body.scholar_of_record ?? null,
     model_name: MODEL_NAME,
     prompt_version: PROMPT_VERSION,

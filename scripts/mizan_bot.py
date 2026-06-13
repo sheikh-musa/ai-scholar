@@ -149,6 +149,17 @@ class RetrievalMeta:
         self.matched_passage_id = None
         self._ids = []
         self._seen = set()
+        # retrieval_config: the retrieval-substrate config dict (retriever
+        # version / path / reranker / limit / cap / gate) returned by
+        # fiqh_semantic.search_semantic, stamped into the audit row per
+        # CAI-RESP-220 so an evidence set is reproducible from its config.
+        # First non-None config wins (the semantic fiqh path that grounded
+        # the response); FTS-fallback / followup paths leave it None.
+        self.retrieval_config = None
+
+    def set_retrieval_config(self, cfg):
+        if cfg and self.retrieval_config is None:
+            self.retrieval_config = cfg
 
     def _add(self, rid):
         if not rid or rid in self._seen:
@@ -270,6 +281,24 @@ FIQH_TOPIC_KEYWORDS = {
     "tahallul", "taḥallul",
     "hady", "hadi", "qurbani", "udhiyah", "uḍḥiya",
     "tamattuʿ", "tamattu", "qiran", "qirān", "ifrad", "ifrād",
+    # Munakahat (family law) — added 2026-06-13 per "fiqh topic retrieve and
+    # frame" directive. Routes definitional/procedural family-law questions to
+    # juridical retrieval, NOT the scholar gate. Explicit halal/haram judgment
+    # requests still hit RULING_KEYWORDS first (e.g. "is mutʿah halal") and gate
+    # correctly; these only open the retrieve-and-frame path for topic queries.
+    "nikah", "nikaah", "nikkah", "marriage", "marry", "wedding",
+    "nafkah", "nafaqah", "nafaqa", "maintenance", "upkeep",
+    "mahr", "mas kahwin", "maskahwin", "dowry", "bridal gift",
+    "wali", "walī", "guardian",
+    "mutʿah", "mutah", "mut'ah", "consolatory gift",
+    "talaq", "talak", "ṭalāq", "divorce", "divorced",
+    "taklik", "taʿliq", "ta'liq", "conditional divorce",
+    "khulʿ", "khul", "khulu", "khula",
+    "faskh", "annulment",
+    "rujuk", "rujūʿ", "ruju", "reconciliation",
+    "iddah", "ʿiddah", "idda", "waiting period",
+    "hadanah", "ḥaḍānah", "hadhanah", "custody",
+    "li'an", "liʿan", "lian", "zihar", "ẓihār", "ila", "īlāʾ",
 }
 
 
@@ -1709,9 +1738,16 @@ def gather_context(question, meta=None):
         # Phase 2 semantic-first per CAI-PROCESS-GLUE-AUDIT-MIZANBOT-001
         # hybrid ruling. FTS-fallback on encoder timeout / empty / unreachable.
         try:
-            fiqh_data = fiqh_semantic.search_semantic(question, limit=3)
+            fiqh_data = fiqh_semantic.search_semantic(question, limit=8)
         except Exception:
             fiqh_data = {"results": []}
+        # Stamp the semantic retrieval config onto the audit meta BEFORE the FTS
+        # fallback below can reassign fiqh_data and drop retrieval_meta (CAI-RESP-220
+        # reproducibility constraint). Captures the path that actually ran the
+        # vector search (rpc | bruteforce | none), independent of whether it cleared
+        # the 0.50 gate.
+        if meta is not None:
+            meta.set_retrieval_config(fiqh_data.get("retrieval_meta"))
         # Rank threshold (calibrated 2026-05-19 against Tier 1 stress queries
         # AND non-fiqh controls). bge-m3 has a gray zone 0.49-0.56 where both
         # legitimate fiqh queries and broad-Islamic-knowledge queries land
@@ -1911,7 +1947,7 @@ Respond directly to the user's question:"""
 
 
 # --- Persistence helper (AL-BAYAN-COMPOSE-001 / CAI-RESP-135) ---
-def persist_emission(chat_id, query_text, response_text, retrieval_ids=None, matched_passage_id=None):
+def persist_emission(chat_id, query_text, response_text, retrieval_ids=None, matched_passage_id=None, retrieval_config=None):
     """POST to persist-mizan-ruling Edge Function.
 
     Fail-soft: log on error, never raise. Bot's user-facing UX must not break
@@ -1930,6 +1966,12 @@ def persist_emission(chat_id, query_text, response_text, retrieval_ids=None, mat
         "retrieval_ids": retrieval_ids or [],
         "matched_passage_id": matched_passage_id,
     }
+    # CAI-RESP-220: stamp the retrieval-substrate config so an evidence set is
+    # reproducible from the audit row. Omit the key entirely when absent so the
+    # Edge Function (pre-deploy) and column (pre-migration) degrade silently —
+    # the persist path must never hard-depend on the new field.
+    if retrieval_config:
+        payload["retrieval_config"] = retrieval_config
     key = SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(PERSIST_FUNCTION_URL, data=data, headers={
@@ -2345,6 +2387,7 @@ def main():
                             cb_chat, last_q, answer,
                             retrieval_ids=retrieval_meta.retrieval_ids,
                             matched_passage_id=retrieval_meta.matched_passage_id,
+                            retrieval_config=retrieval_meta.retrieval_config,
                         )
                     except Exception as e:
                         print(f"  Callback re-answer failed: {type(e).__name__}: {e}")
@@ -2618,6 +2661,7 @@ def main():
                         chat_id, text, answer,
                         retrieval_ids=retrieval_meta.retrieval_ids,
                         matched_passage_id=retrieval_meta.matched_passage_id,
+                        retrieval_config=retrieval_meta.retrieval_config,
                     )
                 except Exception as msg_err:
                     # Per-message exception handler — don't leave user hanging.

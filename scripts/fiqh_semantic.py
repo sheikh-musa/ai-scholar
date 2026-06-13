@@ -97,6 +97,32 @@ QUERY_EXPANSIONS = {
     "sahwi": "sajdah sahw prostration of forgetfulness omitted sunnah abʿaḍ tashahhud qunut doubt rakah",
     "sahwa": "sajdah sahw prostration of forgetfulness omitted sunnah abʿaḍ tashahhud qunut doubt rakah",
     "sahu": "sajdah sahw prostration of forgetfulness omitted sunnah abʿaḍ tashahhud qunut doubt rakah",
+    # Munakahat (family law) — added 2026-06-13 (CAI-RESP-220 stopgap B). bge-m3
+    # does not bridge the transliterated Arabic/Malay terms to their English
+    # translation-vocabulary equivalents: "how does talaq work" scored generic
+    # ṣalāh content at 0.53 while the actual ṭalāq chapter stayed below the gate.
+    # Intersection-only with the Nihāyat/Qudūrī translation vocabulary (divorce,
+    # marriage, maintenance, waiting period, guardian, dowry, custody all occur
+    # in the English text). Same recall class as the sahw/qurban hops.
+    "talaq": "divorce repudiation",
+    "talak": "divorce repudiation",
+    "ṭalāq": "divorce repudiation",
+    "nikah": "marriage contract",
+    "nikaah": "marriage contract",
+    "mahr": "dowry bridal gift",
+    "nafkah": "maintenance upkeep support",
+    "nafaqah": "maintenance upkeep support",
+    "iddah": "waiting period after divorce",
+    "ʿiddah": "waiting period after divorce",
+    "idda": "waiting period after divorce",
+    "khulʿ": "divorce by compensation",
+    "khul": "divorce by compensation",
+    "faskh": "annulment of marriage",
+    "rujuk": "return reconciliation revocable divorce",
+    "hadanah": "custody of the child",
+    "ḥaḍānah": "custody of the child",
+    "wali": "marriage guardian",
+    "walī": "marriage guardian",
 }
 
 
@@ -133,6 +159,35 @@ def _supa(method: str, path: str, payload=None) -> Optional[list]:
         "Content-Type": "application/json",
     }
     return _http(method, f"{SUPABASE_URL}{path}", payload, headers, timeout=5.0)
+
+
+# PostgREST caps unbounded selects at max-rows (1000 on this project); a plain
+# GET silently truncates. At 1211 chunks that hid the tail of the corpus — in a
+# fiqh matn, the late chapters (muʿāmalāt / munakahat / jināyāt). Page through
+# with limit+offset until a short page signals the end. Stable ordering by
+# (text_id, chunk_index) keeps pagination deterministic across requests.
+# Stopgap per CAI-RESP-220 (B); superseded by the pgvector RPC (A) once the
+# match_juridical_embeddings migration applies — that does ORDER BY ... LIMIT k
+# server-side and never fetches the full table.
+_PAGE = 1000
+
+
+def _fetch_all_embeddings() -> list:
+    rows: list = []
+    offset = 0
+    while True:
+        batch = _supa(
+            "GET",
+            "/rest/v1/juridical_embeddings"
+            "?select=juridical_text_id,chunk_index,chunk_text,embedding"
+            "&order=juridical_text_id,chunk_index"
+            f"&limit={_PAGE}&offset={offset}",
+        ) or []
+        rows.extend(batch)
+        if len(batch) < _PAGE:
+            break
+        offset += _PAGE
+    return rows
 
 
 def _encode(query: str) -> Optional[list]:
@@ -175,7 +230,100 @@ def _cosine(a: list, b) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-def search_semantic(query: str, limit: int = 3, max_per_text_id: int = 2) -> dict:
+# Stamped into the evidence-audit record so every fiqh retrieval is reproducible
+# (CAI-RESP-220 constraint). Bump RETRIEVER_VERSION on any ranking-affecting change.
+RETRIEVER_VERSION = "fiqh-semantic-v3-rpc-rerank-2026-06-13"
+RERANK_MODEL = "bge-reranker-v2-m3"
+_CANDIDATE_POOL = 40
+
+
+def _retrieval_meta(path: str, rerank_applied: bool, limit: int, cap: int) -> dict:
+    return {
+        "retriever": RETRIEVER_VERSION,
+        "path": path,                                      # rpc | bruteforce | none
+        "rerank": RERANK_MODEL if rerank_applied else None,
+        "limit": limit,
+        "max_per_text_id": cap,
+        "gate_min_score": 0.50,                            # applied downstream in mizan_bot
+    }
+
+
+def _rerank(query: str, passages: list, timeout: float = 30.0) -> Optional[list]:
+    """bge-reranker-v2-m3 query×passage relevance scores aligned with passages,
+    or None on failure. Fixes the query-document asymmetry single-vector bge-m3
+    stumbles on (e.g. 'how does talaq work' vs a chunk that says 'divorce takes
+    effect through any expression').
+    """
+    if not passages:
+        return []
+    try:
+        r = _http(
+            "POST",
+            f"{ENCODER_URL}/rerank",
+            {"query": query, "passages": passages},
+            {"Content-Type": "application/json"},
+            timeout=timeout,
+        )
+        return r["scores"]
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, KeyError, TypeError):
+        return None
+
+
+def _candidates_via_rpc(qvec: list, pool: int) -> Optional[list]:
+    """Server-side top-K via match_juridical_embeddings (HNSW + <#>).
+    Returns list[(sem_score, chunk_row)], or None when the RPC is unavailable
+    (migration 20260613_002 not yet applied → PostgREST 404) or errors — the
+    caller then falls back to the paginated brute-force path.
+    """
+    try:
+        rows = _http(
+            "POST",
+            f"{SUPABASE_URL}/rest/v1/rpc/match_juridical_embeddings",
+            {"query_embedding": qvec, "match_count": pool, "min_score": 0.0},
+            {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
+             "Content-Type": "application/json"},
+            timeout=10.0,
+        )
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, TypeError):
+        return None
+    if rows is None:
+        return None
+    return [
+        (float(r.get("score") or 0.0),
+         {"juridical_text_id": r["juridical_text_id"],
+          "chunk_index": r.get("chunk_index"),
+          "chunk_text": r.get("chunk_text", "")})
+        for r in rows
+    ]
+
+
+def _candidates_via_bruteforce(qvec: list, pool: int) -> list:
+    """Fallback path (CAI-RESP-220 stopgap B): paginate every chunk, cosine in
+    Python, return the top `pool`. Used until migration 20260613_002 applies.
+    """
+    embeds = _fetch_all_embeddings()
+    if not embeds:
+        return []
+    scored = sorted(
+        ((_cosine(qvec, row["embedding"]), row) for row in embeds),
+        key=lambda t: t[0],
+        reverse=True,
+    )
+    return [
+        (s, {"juridical_text_id": r["juridical_text_id"],
+             "chunk_index": r.get("chunk_index"),
+             "chunk_text": r.get("chunk_text", "")})
+        for s, r in scored[:pool]
+    ]
+
+
+def search_semantic(
+    query: str,
+    limit: int = 8,
+    max_per_text_id: int = 5,
+    rerank: bool = True,
+    candidate_pool: int = _CANDIDATE_POOL,
+) -> dict:
     """Semantic retrieval over juridical corpus with per-source diversification.
 
     Same return shape as mizan_bot.lookup_fiqh so wire-in is a one-line swap.
@@ -190,48 +338,76 @@ def search_semantic(query: str, limit: int = 3, max_per_text_id: int = 2) -> dic
       10/15 queries returning ONLY Nihāyat, losing the Safīnat matn-style
       answers that Hadhrami Shafi'i users expect.
 
-      Fix: cap chunks-per-juridical_text_id at `max_per_text_id` (default 2).
+      Fix: cap chunks-per-juridical_text_id at `max_per_text_id`.
       Sort all embeddings by cosine, walk in order, include only if we
       haven't hit the cap for that text. Preserves top-1 quality
       (highest-ranked chunk always wins) while reserving slots for other
       sources when their chunks rank ≥ 0.45.
+
+    Cap softened 2026-06-13 (CAI-RESP-220, stopgap B): default cap 2→5 and
+    limit 3→8. The tight cap=2 mutilated multi-chunk answers — e.g. an
+    'iddah after divorce' query where Nihāyat legitimately owns the top-10
+    relevant chunks (a contiguous chapter run, cosine 0.62-0.66) but only 2
+    surfaced, forcing slot 3 to a weaker cross-source chunk. The guard is
+    kept (not removed) so a single source can't monopolise all 8 slots; 5
+    lets a real chapter-length answer through while still reserving ≥3 slots
+    for other matns when they rank.
     """
     qvec = _encode(_expand_query(query))
     if qvec is None:
-        return {"results": []}
+        return {"results": [], "retrieval_meta": _retrieval_meta("none", False, limit, max_per_text_id)}
 
+    # Candidate pool: server-side RPC (A) with brute-force fallback (B). The
+    # fallback keeps this module working before migration 20260613_002 applies.
     try:
-        embeds = _supa(
-            "GET",
-            "/rest/v1/juridical_embeddings?select=juridical_text_id,chunk_index,chunk_text,embedding",
-        ) or []
+        cands = _candidates_via_rpc(qvec, candidate_pool)
+        path = "rpc"
+        if cands is None:
+            cands = _candidates_via_bruteforce(qvec, candidate_pool)
+            path = "bruteforce"
     except Exception:
-        return {"results": []}
-    if not embeds:
-        return {"results": []}
+        return {"results": [], "retrieval_meta": _retrieval_meta("none", False, limit, max_per_text_id)}
+    if not cands:
+        return {"results": [], "retrieval_meta": _retrieval_meta(path, False, limit, max_per_text_id)}
 
-    # Score all, sort descending
-    all_scored = sorted(
-        ((_cosine(qvec, row["embedding"]), row) for row in embeds),
-        key=lambda t: t[0],
-        reverse=True,
-    )
+    # Reranker pass: bge-reranker-v2-m3 reorders the pool, fixing the
+    # query-document asymmetry single-vector bge-m3 stumbles on. Combine
+    # 60% rerank + 40% semantic (mirrors hadith_semantic) so cross-lingual
+    # semantic signal isn't lost. IMPORTANT: the combined score drives ORDER
+    # only — the reported `rank` stays the raw semantic cosine so the 0.50
+    # relevance gate in mizan_bot keeps its calibration. Falls through to
+    # semantic-only ordering if the reranker is unavailable.
+    rerank_applied = False
+    ordering = [(sem, sem, row) for sem, row in cands]  # (order_key, sem, row)
+    if rerank:
+        passages = [(row["chunk_text"] or "")[:1500] for _, row in cands]
+        # Tight timeout: this runs inline in the bot's reply path, so a hung
+        # reranker must degrade to semantic-only ordering fast, not stall the DM.
+        scores = _rerank(query, passages, timeout=8.0)
+        if scores is not None and len(scores) == len(cands):
+            ordering = [
+                (0.6 * float(s) + 0.4 * sem, sem, row)
+                for (sem, row), s in zip(cands, scores)
+            ]
+            rerank_applied = True
+    ordering.sort(key=lambda t: t[0], reverse=True)
 
-    # Per-text_id-diversified top-K: walk in score order, take up to
-    # max_per_text_id from any single juridical_text_id
+    # Per-text_id-diversified top-K: walk in (reranked) order, take up to
+    # max_per_text_id from any single juridical_text_id. Guard kept, not
+    # removed (CAI-RESP-220) — a single matn can't monopolise all slots.
     scored: list = []
     per_text_count: dict = {}
-    for score, row in all_scored:
+    for _order_key, sem_score, row in ordering:
         if len(scored) >= limit:
             break
         tid = row["juridical_text_id"]
         if per_text_count.get(tid, 0) >= max_per_text_id:
             continue
-        scored.append((score, row))
+        scored.append((sem_score, row))
         per_text_count[tid] = per_text_count.get(tid, 0) + 1
 
     if not scored:
-        return {"results": []}
+        return {"results": [], "retrieval_meta": _retrieval_meta(path, rerank_applied, limit, max_per_text_id)}
 
     text_ids = list({row["juridical_text_id"] for _, row in scored})
     in_clause = "(" + ",".join(text_ids) + ")"
@@ -265,7 +441,7 @@ def search_semantic(query: str, limit: int = 3, max_per_text_id: int = 2) -> dic
             "tier": tr.get("output_tier", "paraphrased"),
             "rank": float(score),
         })
-    return {"results": results}
+    return {"results": results, "retrieval_meta": _retrieval_meta(path, rerank_applied, limit, max_per_text_id)}
 
 
 if __name__ == "__main__":

@@ -31,6 +31,10 @@ export interface PersistRulingFields {
   output_tier: OutputTier;
   matched_passage_id?: string | null;
   retrieval_ids?: string[];
+  // CAI-RESP-220: retrieval-substrate config (retriever version / path /
+  // reranker / limit / cap / gate) for reproducibility. Stored on the row but
+  // intentionally NOT folded into content_hash — see canonicalContent note.
+  retrieval_config?: Record<string, unknown> | null;
   scholar_of_record?: string | null;
   model_name: string;
   prompt_version: string;
@@ -71,6 +75,7 @@ export async function persistRulingEmission(
     output_tier: fields.output_tier,
     matched_passage_id: fields.matched_passage_id ?? null,
     retrieval_ids: fields.retrieval_ids ?? [],
+    retrieval_config: fields.retrieval_config ?? null,
     scholar_of_record: fields.scholar_of_record ?? null,
     model_name: fields.model_name,
     prompt_version: fields.prompt_version,
@@ -91,6 +96,11 @@ export async function persistRulingEmission(
   // Canonical content for the audit hash. Fields chosen so a verifier can
   // reproduce the hash from the row + retrieval_ids alone, without needing
   // to fetch the LLM model card or tier classifier state.
+  // retrieval_config is intentionally EXCLUDED: it is reproducibility metadata
+  // (CAI-RESP-220), not an integrity-bound evidence pointer. Folding it in
+  // would require a lockstep audit-verify change and break hash continuity
+  // across the change boundary, for no integrity gain (the config is
+  // deployment-deterministic, recoverable from retriever version + git).
   const canonicalContent = {
     interaction_id: interactionId,
     bot_variant: fields.bot_variant,
