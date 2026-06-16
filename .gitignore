@@ -4,6 +4,9 @@
 .env.*
 *.log
 
+# Node
+node_modules/
+
 # Python
 __pycache__/
 *.pyc
@@ -15,3 +18,12 @@ supabase/.temp/
 scripts/.v4_*
 scripts/.v5_*
 scripts/.probe_*
+
+# Runtime junk — process pids, translation/ingest checkpoints, rollback
+# snapshots, and stderr logs. Local-only artifacts, never committed.
+scripts/*.pid
+scripts/.*.pid
+scripts/*.checkpoint.json
+scripts/.*.checkpoint.json
+scripts/.asbab_retag_rollback/
+logs/*.err
