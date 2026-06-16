@@ -1,0 +1,88 @@
+# INV-8 forward attestation publisher (decision INV-8-FORWARD-SCHEDULER-001).
+#
+# Signs the daily ruling_audit_log Merkle root and pushes it to the
+# al-bayan/audit-attestations repo. Replaces the never-installed operator
+# cron whose absence caused the 8-day R7 breach (CAI-RESP-165).
+#
+# Hardenings (CAI msg #2006, kept by amendment msg #2010):
+#   A — DB access via the least-privilege `attestation_publisher` role over a
+#       direct connection string (ATTESTATION_DB_URL), NEVER the service-role
+#       key. Worst-case GitHub compromise = forge a daily seal, nothing more.
+#   B — signing uses a DEDICATED Ed25519 keypair (ATTESTATION_SIGNING_KEY /
+#       AUDIT_KEY_ID), not shared with any other signing use.
+#
+# REVIEW BEFORE ACTIVATION: this workflow + the attestation_publisher role
+# migration (20260611_001) go through cc-orchestrator adversarial review per
+# CAI-PROTOCOL-001 before the schedule is uncommented and secrets are set.
+#
+# DORMANT UNTIL ACTIVATED. The nightly `schedule` is intentionally commented
+# out so this never fails on a half-configured setup. To go live:
+#   1. Create the al-bayan/audit-attestations repo (with a `main` branch).
+#   2. Apply migration 20260611_001_attestation_publisher_role.sql and set the
+#      role password out-of-band:
+#        ALTER ROLE attestation_publisher WITH PASSWORD '<generated>';
+#   3. Set these repo Actions secrets:
+#        ATTESTATION_DB_URL       (postgresql://attestation_publisher:<pw>@<host>:5432/postgres?sslmode=require)
+#        ATTESTATION_SIGNING_KEY  (b64 pkcs8 Ed25519 private key — DEDICATED, from generate-signing-key.ts)
+#        AUDIT_KEY_ID             (e.g. al-bayan-attest-2026-06-11)
+#        AUDIT_REPO_TOKEN         (PAT/deploy token with push to al-bayan/audit-attestations)
+#   4. Uncomment the `schedule` block below.
+# Until then, run on demand via the Actions tab ("Run workflow").
+
+name: INV-8 attestation publish
+
+on:
+  workflow_dispatch: {}
+  # Activate once the prerequisites above are in place:
+  # schedule:
+  #   - cron: "0 3 * * *" # 03:00 UTC nightly
+
+permissions:
+  contents: read
+
+concurrency:
+  group: attestation-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ai-scholar (scripts)
+        uses: actions/checkout@v4
+
+      - name: Checkout attestations repo (publish target)
+        uses: actions/checkout@v4
+        with:
+          repository: al-bayan/audit-attestations
+          path: audit-attestations
+          token: ${{ secrets.AUDIT_REPO_TOKEN }}
+          persist-credentials: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install audit tooling deps
+        working-directory: scripts/audit
+        run: npm install
+
+      - name: Configure git identity for attestations repo
+        working-directory: audit-attestations
+        run: |
+          git config user.name "al-bayan-attestation-bot"
+          git config user.email "attestation-bot@al-bayan.local"
+
+      - name: Publish daily attestation
+        env:
+          ATTESTATION_DB_URL: ${{ secrets.ATTESTATION_DB_URL }}
+          ATTESTATION_SIGNING_KEY: ${{ secrets.ATTESTATION_SIGNING_KEY }}
+          AUDIT_KEY_ID: ${{ secrets.AUDIT_KEY_ID }}
+          AUDIT_REPO_PATH: ${{ github.workspace }}/audit-attestations
+        run: npx -y tsx scripts/audit/publish-daily-attestation.ts
+
+      - name: Health gate (R7 — fail if any ruling row >24h unattested)
+        env:
+          ATTESTATION_DB_URL: ${{ secrets.ATTESTATION_DB_URL }}
+        run: npx -y tsx scripts/audit/check-attestation-health.ts --strict

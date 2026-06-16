@@ -1,0 +1,13 @@
+{
+  "name": "ai-scholar-audit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "INV-8 audit attestation tooling (forward publisher + health check).",
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

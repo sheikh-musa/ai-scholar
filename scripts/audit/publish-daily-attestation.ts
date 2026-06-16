@@ -1,22 +1,30 @@
 #!/usr/bin/env node
 /**
- * Publish a daily Merkle-root attestation for INV-8 audit substrate.
+ * Publish a daily Merkle-root attestation for the INV-8 audit substrate.
  *
- * Cron: 03:00 UTC nightly.
+ * Runs as a scheduled GitHub Action (decision INV-8-FORWARD-SCHEDULER-001).
+ * Cron: 03:00 UTC nightly (activated once secrets + target repo exist).
+ *
+ * Hardenings (CAI msg #2006):
+ *   A — authenticates with the least-privilege `attestation_publisher` role
+ *       via ATTESTATION_DB_URL (direct connection), NEVER the service-role key.
+ *   B — signs with a DEDICATED Ed25519 keypair (ATTESTATION_SIGNING_KEY /
+ *       AUDIT_KEY_ID), not shared with any other signing use.
  *
  * Pipeline:
- *   1. Fetch all ruling_audit_log.merkle_leaf rows in id order.
+ *   1. SELECT all ruling_audit_log.merkle_leaf rows in id order.
  *   2. Compute balanced binary Merkle root (SHA-256).
- *   3. Sign the root with Ed25519 using ORCHESTRATOR_AUDIT_SIGNING_KEY.
- *   4. Insert attestation row into daily_attestations (idempotent per date).
- *   5. Write attestations/YYYY/MM/DD.json to the local checkout of
- *      al-bayan/audit-attestations, commit, push to GitHub + Codeberg.
+ *   3. Sign the root with Ed25519 (ATTESTATION_SIGNING_KEY).
+ *   4. Write attestations/YYYY/MM/DD.json to the local checkout of
+ *      al-bayan/audit-attestations, commit, push.
+ *   5. UPSERT the attestation row (incl. git_commit_hash) into
+ *      daily_attestations (idempotent per date).
  *
  * Usage:
- *   ORCHESTRATOR_AUDIT_SIGNING_KEY=<b64-pkcs8> \
- *     AUDIT_KEY_ID=al-bayan-audit-2026-04-23 \
- *     SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
- *     AUDIT_REPO_PATH=/srv/audit-attestations \
+ *   ATTESTATION_DB_URL=postgresql://attestation_publisher:...@host:5432/postgres?sslmode=require \
+ *     ATTESTATION_SIGNING_KEY=<b64-pkcs8> \
+ *     AUDIT_KEY_ID=al-bayan-attest-2026-06-11 \
+ *     AUDIT_REPO_PATH=/path/to/audit-attestations \
  *     npx tsx scripts/audit/publish-daily-attestation.ts
  */
 
@@ -24,17 +32,11 @@ import { createHash, createPrivateKey, sign } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
-
-interface AuditLogRow {
-  id: number;
-  merkle_leaf: string;
-  created_at: string;
-}
+import { attestationPool, closePool } from "./db.ts";
 
 const REQUIRED_ENV = [
-  "SUPABASE_URL",
-  "SUPABASE_SERVICE_ROLE_KEY",
-  "ORCHESTRATOR_AUDIT_SIGNING_KEY",
+  "ATTESTATION_DB_URL",
+  "ATTESTATION_SIGNING_KEY",
   "AUDIT_KEY_ID",
   "AUDIT_REPO_PATH",
 ] as const;
@@ -46,24 +48,22 @@ for (const key of REQUIRED_ENV) {
   }
 }
 
-const {
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY,
-  ORCHESTRATOR_AUDIT_SIGNING_KEY,
-  AUDIT_KEY_ID,
-  AUDIT_REPO_PATH,
-} = process.env as Record<(typeof REQUIRED_ENV)[number], string>;
+const { ATTESTATION_SIGNING_KEY, AUDIT_KEY_ID, AUDIT_REPO_PATH } = process.env as Record<
+  (typeof REQUIRED_ENV)[number],
+  string
+>;
+
+interface AuditLogRow {
+  id: number;
+  merkle_leaf: string;
+  created_at: string;
+}
 
 async function fetchLeaves(): Promise<AuditLogRow[]> {
-  const url = `${SUPABASE_URL}/rest/v1/ruling_audit_log?order=id.asc&select=id,merkle_leaf,created_at`;
-  const resp = await fetch(url, {
-    headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-    },
-  });
-  if (!resp.ok) throw new Error(`fetch leaves failed: ${resp.status} ${await resp.text()}`);
-  return (await resp.json()) as AuditLogRow[];
+  const { rows } = await attestationPool().query<AuditLogRow>(
+    "SELECT id, merkle_leaf, created_at FROM public.ruling_audit_log ORDER BY id ASC",
+  );
+  return rows;
 }
 
 function sha256Hex(...parts: string[]): string {
@@ -90,33 +90,40 @@ function merkleRoot(leaves: string[]): string {
 
 function signBase64(message: string): string {
   const privateKey = createPrivateKey({
-    key: Buffer.from(ORCHESTRATOR_AUDIT_SIGNING_KEY, "base64"),
+    key: Buffer.from(ATTESTATION_SIGNING_KEY, "base64"),
     format: "der",
     type: "pkcs8",
   });
-  const signature = sign(null, Buffer.from(message, "utf8"), privateKey);
-  return signature.toString("base64");
+  return sign(null, Buffer.from(message, "utf8"), privateKey).toString("base64");
 }
 
-async function insertAttestation(row: {
+async function upsertAttestation(row: {
   attestation_date: string;
   row_count_end: number;
   root_hash: string;
   root_signature: string;
   key_id: string;
+  git_commit_hash: string;
 }): Promise<void> {
-  const url = `${SUPABASE_URL}/rest/v1/daily_attestations`;
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates",
-    },
-    body: JSON.stringify(row),
-  });
-  if (!resp.ok) throw new Error(`insert attestation failed: ${resp.status} ${await resp.text()}`);
+  await attestationPool().query(
+    `INSERT INTO public.daily_attestations
+       (attestation_date, row_count_end, root_hash, root_signature, key_id, git_commit_hash)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (attestation_date) DO UPDATE SET
+       row_count_end   = EXCLUDED.row_count_end,
+       root_hash       = EXCLUDED.root_hash,
+       root_signature  = EXCLUDED.root_signature,
+       key_id          = EXCLUDED.key_id,
+       git_commit_hash = EXCLUDED.git_commit_hash`,
+    [
+      row.attestation_date,
+      row.row_count_end,
+      row.root_hash,
+      row.root_signature,
+      row.key_id,
+      row.git_commit_hash,
+    ],
+  );
 }
 
 function publishToGit(attestationDate: string, payload: unknown): string {
@@ -151,32 +158,24 @@ async function main() {
     generated_at: new Date().toISOString(),
   };
 
+  // Commit to git first so the on-chain row carries the real commit hash.
   const commitHash = publishToGit(today, payload);
 
-  await insertAttestation({
+  await upsertAttestation({
     attestation_date: today,
     row_count_end: rowCountEnd,
     root_hash: root,
     root_signature: signature,
     key_id: AUDIT_KEY_ID,
-  });
-
-  // Backfill commit hash into the row we just inserted.
-  const patchUrl = `${SUPABASE_URL}/rest/v1/daily_attestations?attestation_date=eq.${today}`;
-  await fetch(patchUrl, {
-    method: "PATCH",
-    headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ git_commit_hash: commitHash }),
+    git_commit_hash: commitHash,
   });
 
   console.log(JSON.stringify({ ...payload, git_commit_hash: commitHash }, null, 2));
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  })
+  .finally(() => closePool());

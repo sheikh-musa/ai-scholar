@@ -5,49 +5,71 @@
  * R6d — surface audit_key_registry + daily_attestations health.
  * R7  — CI gate: ruling_audit_log row >24h without attestation → fail boot.
  *
+ * Two credential modes (CAI msg #2006 Hardening A):
+ *   - ATTESTATION_DB_URL (preferred, used by the GitHub Action): least-privilege
+ *     `attestation_publisher` role over a direct pg connection. This role can
+ *     read ruling_audit_log + daily_attestations (everything the R7 gate needs)
+ *     but is DENIED audit_key_registry by design — so the key-registry portion
+ *     of the report is reported as "unknown" under this mode, not failed.
+ *   - SUPABASE_SERVICE_ROLE_KEY (fuller check, run locally / by cc-orchestrator):
+ *     PostgREST path with full visibility including audit_key_registry.
+ * ATTESTATION_DB_URL wins if both are present.
+ *
  * Output forms:
  *   --json     machine-readable for boot_briefing ingestion (cc-orchestrator R5)
  *   (default)  human-readable for terminal / CI log
  *   --strict   exit non-zero if any unattested row >24h old (R7 gate behavior)
  *
- * Usage:
+ * Usage (Action / least-privilege):
+ *   ATTESTATION_DB_URL=postgresql://attestation_publisher:...@host:5432/postgres?sslmode=require \
+ *     npx tsx scripts/audit/check-attestation-health.ts --strict
+ * Usage (fuller local check):
  *   SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
- *     npx tsx scripts/audit/check-attestation-health.ts [--json] [--strict]
- *
- * Boot wiring (when boot_briefing source='migration_drift' lands per R5):
- *   - Also accept source='attestation_health' with the JSON shape below.
+ *     npx tsx scripts/audit/check-attestation-health.ts [--json]
  */
 
-const REQUIRED_ENV = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"] as const;
-for (const k of REQUIRED_ENV) {
-  if (!process.env[k]) {
-    console.error(`missing required env: ${k}`);
-    process.exit(2);
-  }
-}
-
-const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env as Record<
-  (typeof REQUIRED_ENV)[number],
-  string
->;
+import { attestationPool, closePool } from "./db.ts";
 
 const flags = new Set(process.argv.slice(2));
 const asJson = flags.has("--json");
 const strict = flags.has("--strict");
 
-async function pgrest(path: string): Promise<unknown> {
-  const resp = await fetch(`${SUPABASE_URL}${path}`, {
-    headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-    },
-  });
-  if (!resp.ok) throw new Error(`${path}: ${resp.status} ${await resp.text()}`);
-  return resp.json();
+const usePg = !!process.env.ATTESTATION_DB_URL;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!usePg && (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY)) {
+  console.error(
+    "missing credentials: set ATTESTATION_DB_URL (preferred) or SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY",
+  );
+  process.exit(2);
+}
+
+interface KeyRow {
+  key_id: string;
+  valid_from: string;
+  valid_until: string | null;
+}
+interface AttestationRow {
+  attestation_date: string;
+  row_count_end: number;
+}
+interface AuditRow {
+  id: number;
+  created_at: string;
+}
+
+/** Raw data the report needs, sourced from either credential mode. */
+interface RawData {
+  keys: KeyRow[] | null; // null = not readable under current creds (least-privilege)
+  attestations: AttestationRow[]; // attestation_date DESC
+  auditCount: number;
+  latestAudit: AuditRow | null;
+  unattestedOlderThan24h: AuditRow[];
 }
 
 interface Health {
-  key_registry: { count: number; active_keys: string[] };
+  key_registry: { count: number | null; active_keys: string[] | null };
   attestations: {
     total: number;
     earliest_date: string | null;
@@ -64,46 +86,102 @@ interface Health {
   notes: string[];
 }
 
-async function main(): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
+const cutoffIso = (): string => new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
+async function fetchViaPg(): Promise<RawData> {
+  const pool = attestationPool();
+
+  // audit_key_registry is intentionally NOT granted to attestation_publisher.
+  // Probe it; on permission-denied keep keys=null (reported as "unknown").
+  let keys: KeyRow[] | null = null;
+  try {
+    const { rows } = await pool.query<KeyRow>(
+      "SELECT key_id, valid_from, valid_until FROM public.audit_key_registry ORDER BY valid_from DESC",
+    );
+    keys = rows;
+  } catch {
+    keys = null;
+  }
+
+  const { rows: attestations } = await pool.query<AttestationRow>(
+    "SELECT attestation_date::text, row_count_end FROM public.daily_attestations ORDER BY attestation_date DESC",
+  );
+
+  const { rows: countRows } = await pool.query<{ count: string }>(
+    "SELECT count(*)::bigint AS count FROM public.ruling_audit_log",
+  );
+  const auditCount = parseInt(countRows[0]?.count ?? "0", 10);
+
+  const { rows: latestRows } = await pool.query<AuditRow>(
+    "SELECT id, created_at FROM public.ruling_audit_log ORDER BY id DESC LIMIT 1",
+  );
+  const latestAudit = latestRows[0] ?? null;
+
+  const { rows: unattested } = await pool.query<AuditRow>(
+    "SELECT id, created_at FROM public.ruling_audit_log WHERE created_at < $1 ORDER BY id ASC",
+    [cutoffIso()],
+  );
+
+  return { keys, attestations, auditCount, latestAudit, unattestedOlderThan24h: unattested };
+}
+
+async function pgrest(path: string): Promise<unknown> {
+  const resp = await fetch(`${SUPABASE_URL}${path}`, {
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY as string,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    },
+  });
+  if (!resp.ok) throw new Error(`${path}: ${resp.status} ${await resp.text()}`);
+  return resp.json();
+}
+
+async function fetchViaPgrest(): Promise<RawData> {
   const keys = (await pgrest(
     "/rest/v1/audit_key_registry?select=key_id,valid_from,valid_until&order=valid_from.desc",
-  )) as Array<{ key_id: string; valid_from: string; valid_until: string | null }>;
-
-  const activeKeys = keys.filter((k) => k.valid_until === null).map((k) => k.key_id);
+  )) as KeyRow[];
 
   const attestations = (await pgrest(
     "/rest/v1/daily_attestations?select=attestation_date,row_count_end&order=attestation_date.desc",
-  )) as Array<{ attestation_date: string; row_count_end: number }>;
+  )) as AttestationRow[];
 
-  const auditLog = (await pgrest(
+  const latest = (await pgrest(
     "/rest/v1/ruling_audit_log?select=id,created_at&order=id.desc&limit=1",
-  )) as Array<{ id: number; created_at: string }>;
-  const auditCountResp = await fetch(
-    `${SUPABASE_URL}/rest/v1/ruling_audit_log?select=count`,
-    {
-      headers: {
-        apikey: SUPABASE_SERVICE_ROLE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-        Prefer: "count=exact",
-      },
-      method: "HEAD",
+  )) as AuditRow[];
+
+  const auditCountResp = await fetch(`${SUPABASE_URL}/rest/v1/ruling_audit_log?select=count`, {
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY as string,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      Prefer: "count=exact",
     },
-  );
+    method: "HEAD",
+  });
   const auditCount = parseInt(
     auditCountResp.headers.get("content-range")?.split("/")[1] ?? "0",
     10,
   );
 
-  // R7 logic: count audit-log rows whose created_at is >24h ago and whose
-  // date is NOT covered by daily_attestations.
-  const attestedDates = new Set(attestations.map((a) => a.attestation_date));
-  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const unattested = (await pgrest(
+    `/rest/v1/ruling_audit_log?select=id,created_at&created_at=lt.${cutoffIso()}&order=id.asc`,
+  )) as AuditRow[];
 
-  const unattestedOlderThan24h = (await pgrest(
-    `/rest/v1/ruling_audit_log?select=id,created_at&created_at=lt.${cutoff.toISOString()}&order=id.asc`,
-  )) as Array<{ id: number; created_at: string }>;
+  return {
+    keys,
+    attestations,
+    auditCount,
+    latestAudit: latest[0] ?? null,
+    unattestedOlderThan24h: unattested,
+  };
+}
+
+function buildReport(raw: RawData): Health {
+  const today = new Date().toISOString().slice(0, 10);
+  const { keys, attestations, auditCount, latestAudit, unattestedOlderThan24h } = raw;
+
+  const activeKeys = keys === null ? null : keys.filter((k) => k.valid_until === null).map((k) => k.key_id);
+
+  const attestedDates = new Set(attestations.map((a) => a.attestation_date));
   const unattestedCount = unattestedOlderThan24h.filter(
     (r) => !attestedDates.has(r.created_at.slice(0, 10)),
   ).length;
@@ -111,7 +189,11 @@ async function main(): Promise<void> {
   const notes: string[] = [];
   let status: Health["status"] = "healthy";
 
-  if (activeKeys.length === 0) {
+  if (activeKeys === null) {
+    notes.push(
+      "audit_key_registry not readable under least-privilege role (expected; run the service-role health check for key coverage)",
+    );
+  } else if (activeKeys.length === 0) {
     status = "broken";
     notes.push("no active signing key in audit_key_registry");
   }
@@ -123,31 +205,31 @@ async function main(): Promise<void> {
     status = status === "broken" ? "broken" : "degraded";
     notes.push(`R7 breach: ${unattestedCount} ruling row(s) >24h old without attestation`);
   }
-  // Forward cron didn't run for >1 day after latest log entry?
-  if (attestations[0] && auditLog[0]) {
+  if (attestations[0] && latestAudit) {
     const lastAttested = new Date(attestations[0].attestation_date + "T23:59:59Z");
-    const lastLog = new Date(auditLog[0].created_at);
+    const lastLog = new Date(latestAudit.created_at);
     if (lastLog.getTime() - lastAttested.getTime() > 48 * 60 * 60 * 1000) {
       status = status === "broken" ? "broken" : "degraded";
       notes.push("latest ruling_audit_log row is >48h after last daily_attestation");
     }
   }
 
-  const report: Health = {
+  return {
     key_registry: {
-      count: keys.length,
+      count: keys === null ? null : keys.length,
       active_keys: activeKeys,
     },
     attestations: {
       total: attestations.length,
-      earliest_date: attestations.length > 0 ? attestations[attestations.length - 1].attestation_date : null,
+      earliest_date:
+        attestations.length > 0 ? attestations[attestations.length - 1].attestation_date : null,
       latest_date: attestations[0]?.attestation_date ?? null,
       latest_row_count: attestations[0]?.row_count_end ?? null,
     },
     ruling_audit_log: {
       total: auditCount,
-      latest_id: auditLog[0]?.id ?? null,
-      latest_created_at: auditLog[0]?.created_at ?? null,
+      latest_id: latestAudit?.id ?? null,
+      latest_created_at: latestAudit?.created_at ?? null,
     },
     drift: {
       unattested_rows_over_24h: unattestedCount,
@@ -157,27 +239,46 @@ async function main(): Promise<void> {
     status,
     notes,
   };
+}
+
+async function main(): Promise<void> {
+  const raw = usePg ? await fetchViaPg() : await fetchViaPgrest();
+  const report = buildReport(raw);
+  const unattestedCount = report.drift.unattested_rows_over_24h;
 
   if (asJson) {
     console.log(JSON.stringify(report, null, 2));
   } else {
-    console.log(`status: ${status.toUpperCase()}`);
-    console.log(`audit_key_registry:   ${report.key_registry.count} row(s), active: ${activeKeys.join(", ") || "(none)"}`);
-    console.log(`daily_attestations:   ${report.attestations.total} row(s), latest=${report.attestations.latest_date ?? "(none)"} (row_count_end=${report.attestations.latest_row_count})`);
-    console.log(`ruling_audit_log:     ${report.ruling_audit_log.total} row(s), latest_id=${report.ruling_audit_log.latest_id}, latest_at=${report.ruling_audit_log.latest_created_at}`);
+    const activeKeys = report.key_registry.active_keys;
+    console.log(`status: ${report.status.toUpperCase()}  (creds: ${usePg ? "attestation_publisher" : "service_role"})`);
+    console.log(
+      `audit_key_registry:   ${report.key_registry.count ?? "(unknown)"} row(s), active: ${
+        activeKeys === null ? "(unknown)" : activeKeys.join(", ") || "(none)"
+      }`,
+    );
+    console.log(
+      `daily_attestations:   ${report.attestations.total} row(s), latest=${report.attestations.latest_date ?? "(none)"} (row_count_end=${report.attestations.latest_row_count})`,
+    );
+    console.log(
+      `ruling_audit_log:     ${report.ruling_audit_log.total} row(s), latest_id=${report.ruling_audit_log.latest_id}, latest_at=${report.ruling_audit_log.latest_created_at}`,
+    );
     console.log(`R7 drift:             ${unattestedCount} unattested row(s) older than 24h`);
-    if (notes.length > 0) {
+    if (report.notes.length > 0) {
       console.log("notes:");
-      for (const n of notes) console.log(`  - ${n}`);
+      for (const n of report.notes) console.log(`  - ${n}`);
     }
   }
 
-  if (strict && (status === "broken" || unattestedCount > 0)) {
-    process.exit(1);
+  if (strict && (report.status === "broken" || unattestedCount > 0)) {
+    process.exitCode = 1;
   }
 }
 
-main().catch((err) => {
-  console.error("health check failed:", err);
-  process.exit(2);
-});
+main()
+  .catch((err) => {
+    console.error("health check failed:", err);
+    process.exitCode = 2;
+  })
+  .finally(() => {
+    if (usePg) return closePool();
+  });
