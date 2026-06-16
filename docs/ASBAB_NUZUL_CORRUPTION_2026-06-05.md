@@ -1,7 +1,7 @@
 # Asbāb al-Nuzūl source-tag corruption — diagnostic findings
 
 **Filed:** 2026-06-05 by cc-scholar
-**Status:** Documented, awaiting cleanup window (not in-flight; Quduri ingestion in progress simultaneously)
+**Status:** RESOLVED 2026-06-16 (Option A executed). See "Resolution" below.
 
 ## Finding
 
@@ -83,3 +83,37 @@ When the bot retrieves an asbab row for a tafsir query, it cites `source: al-wah
 - Surfaced during retrieval-debugging earlier in cc-scholar session 2026-05-21 (id=590 spot-check on Q 10:5).
 - Re-confirmed quantitatively 2026-06-05 via SQL pattern-match.
 - Will close as part of asbab-cleanup task when a 3-hour focused window opens.
+
+## Resolution (2026-06-16)
+
+Option A executed. By 2026-06-16 the al-wahidi-tagged set had grown to **1,089 rows**
+(more ingested since the 2026-06-05 filing; the doc's original "902" is superseded).
+
+**Re-tag label chosen: `ishari-tafsir-uncertain-provenance`** (NOT `maybudi-kashf-asrar`).
+Rationale: the integrity bug is the *false al-Wāḥidī attribution* on what is plainly
+ishārī commentary. Correcting that falsehood is sound; asserting a positive
+`maybudi-kashf-asrar` attribution would itself be an unverified claim — the rows have
+not been collated row-by-row against a Kashf al-Asrār edition. The conservative tag
+removes the false claim without minting a new one, and is upgradeable to a firmer
+attribution later once verified.
+
+**Scope: 275 rows** re-tagged (within the doc's "~250–300" estimate). Detection set:
+`source='al-wahidi' AND text_en ILIKE any of`:
+- distinctive (near-zero false-positive): `tariqah`, `the recognizer`, `in terms of
+  allusion`, `the wayfarer` → 250-row union;
+- generic-English markers `the lover`, `the road to` → +25 rows, each individually
+  inspected and confirmed ishārī (Maybudī signatures: "the secrets of love", "Ibn
+  ʿAṭāʾ said", "the Beginningless… the Endless", "the lords of realities") — not
+  heuristic guesswork.
+
+**Verification:** al-wahidi 1089 → 814; new label = 275; total unchanged (1187);
+zero al-wahidi rows still carry the distinctive ishārī markers. Rollback snapshot
+(275 ids, all formerly `al-wahidi`) saved to
+`scripts/.asbab_retag_rollback/affected_20260616.json`; reversal is
+`UPDATE asbab_nuzul SET source='al-wahidi' WHERE id IN (<those ids>)`. Mutation done
+via service-role PostgREST PATCH (data-only; no schema migration). The running bots
+read `source` live at query time, so no restart was required.
+
+**Still out of scope** (per the original finding, line 72): the remaining 814
+al-wahidi rows may carry *other-pattern* mislabels; only the high-confidence ishārī
+subset was corrected here. Option B (clean re-ingest from OpenITI) remains deferred.
