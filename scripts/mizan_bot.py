@@ -299,6 +299,19 @@ FIQH_TOPIC_KEYWORDS = {
     "iddah", "ʿiddah", "idda", "waiting period",
     "hadanah", "ḥaḍānah", "hadhanah", "custody",
     "li'an", "liʿan", "lian", "zihar", "ẓihār", "ila", "īlāʾ",
+    # Raḍāʿah (milk-kinship) + maḥram sub-topic — added 2026-06-16 after a
+    # ping quality-sweep found "how many breastfeedings to be considered
+    # mahram" matched no munakahat term and so never opened juridical
+    # retrieval (Bāb al-Raḍāʿ content confirmed present in the corpus).
+    # Topic-class recall expansion only — ruling-class "is it haram to marry
+    # my foster sister" still hits RULING_KEYWORDS first and gates correctly.
+    # Bare "rida"/"radaa" deliberately EXCLUDED: collides with riḍā
+    # (contentment), an unrelated tasawwuf term.
+    "radāʿah", "radaah", "rada'ah", "raḍāʿ", "raḍāʿah",
+    "breastfeeding", "breastfeed", "suckling", "suckle",
+    "wet nurse", "wet-nurse", "milk kinship", "milk sibling", "milk mother",
+    "foster sibling", "foster brother", "foster sister", "foster mother",
+    "mahram", "maharim", "mahārim", "mahramiyyah",
 }
 
 
