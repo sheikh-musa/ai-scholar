@@ -105,6 +105,65 @@ def set_user_madhhab(telegram_id, madhhab):
     _save_user_prefs(prefs)
 
 
+# --- Durable per-chat state (last question + answer level) ---
+# The in-memory `sessions` dict is wiped on a process restart AND on the 30-min
+# SESSION_TTL prune. A level button (👶 Simpler / 🎓 More detail) lives on a
+# Telegram message indefinitely, so a tap after either event landed on a fresh
+# empty session whose last_query was "" — the dead-end "Level set to X. Ask me
+# your next question." (operator-reported 2026-06-17, msg #2476). Now the bot
+# managed-lane auto-restarts, so this is the common case, not an edge case.
+# Persisting last_query + answer_level per chat lets the level-button callback
+# re-answer the previous question even across a restart. Keyed by sha256(chat_id)
+# to avoid storing raw chat IDs at rest; mirrors the user-prefs store (0600).
+CHAT_STATE_PATH = os.path.expanduser("~/.mizan_chat_state.json")
+
+
+def _load_chat_state():
+    """Returns {chat_id_hash: {"last_query": str, "answer_level": str,
+    "updated_at": str}}. Empty dict if missing/corrupt — fails-soft."""
+    try:
+        with open(CHAT_STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_chat_state(state):
+    """Atomic write via temp file + rename. Fails-soft."""
+    try:
+        tmp = CHAT_STATE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, CHAT_STATE_PATH)
+        os.chmod(CHAT_STATE_PATH, 0o600)
+    except OSError as e:
+        print(f"  _save_chat_state failed: {e}")
+
+
+def save_chat_state(chat_id, last_query, answer_level):
+    """Persist the per-chat last question + level so a level-button press
+    survives a process restart or session-TTL prune."""
+    if chat_id is None:
+        return
+    k = _hash_telegram_id(chat_id)
+    state = _load_chat_state()
+    state[k] = {
+        "last_query": last_query or "",
+        "answer_level": answer_level or "seeker",
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    _save_chat_state(state)
+
+
+def load_chat_state(chat_id):
+    """Returns the persisted {"last_query", "answer_level", ...} dict for a
+    chat, or None."""
+    if chat_id is None:
+        return None
+    k = _hash_telegram_id(chat_id)
+    return _load_chat_state().get(k)
+
+
 MADHHAB_GUIDANCE = {
     "shafii": (
         "User follows the SHAFI'I school. When surfacing ikhtilaf on any "
@@ -834,18 +893,27 @@ def get_session(chat_id):
         del sessions[cid]
 
     if chat_id not in sessions:
+        # Hydrate last_query + answer_level from the durable per-chat store so a
+        # level-button tap re-answers the prior question even after a restart or
+        # TTL prune. last_context/history are intentionally NOT persisted: the
+        # follow-up path (is_followup) guards on last_context being non-empty, so
+        # a hydrated last_query with empty last_context safely falls through to a
+        # fresh context gather rather than reusing stale/empty context.
+        persisted = load_chat_state(chat_id) or {}
         sessions[chat_id] = {
             "history": [],
-            "last_query": "",
+            "last_query": persisted.get("last_query", ""),
             "last_context": "",
             "last_topics": [],
             "last_active": now,
-            "answer_level": "seeker",       # layman | seeker | scholar (default seeker)
+            # layman | seeker | scholar (default seeker), sticky across restarts
+            "answer_level": persisted.get("answer_level", "seeker"),
             "level_responses": {},          # level → telegram message_id (for the
                                             # last_query at that level; cleared when
                                             # last_query changes; lets callback handler
                                             # reply-point to existing answers instead
-                                            # of regenerating).
+                                            # of regenerating). Not persisted —
+                                            # regenerates after a restart.
         }
     # Backfill new fields on pre-existing sessions (session dict survives bot
     # restarts only in-process — fresh sessions get the default; old sessions
@@ -2395,6 +2463,9 @@ def main():
                         msg_id = send_message(cb_chat, answer, reply_markup=_level_keyboard(new_level, cited_verses=cited))
                         if msg_id:
                             session.setdefault("level_responses", {})[new_level] = msg_id
+                        # Persist the now-sticky level (last_q unchanged) so a further
+                        # button tap after a restart still re-answers at the right depth.
+                        save_chat_state(cb_chat, last_q, new_level)
                         print(f"  -> Reformatted response sent ({len(answer)} chars) at {new_level}")
                         persist_emission(
                             cb_chat, last_q, answer,
@@ -2655,6 +2726,8 @@ def main():
                         session["level_responses"] = {}
                     session["last_query"] = text
                     session["last_context"] = context
+                    # Durable copy so a level-button tap survives a restart/TTL prune.
+                    save_chat_state(chat_id, text, session["answer_level"])
                     import re as _re
                     session["last_topics"] = [w for w in _re.findall(r'\w+', text.lower())
                                               if w not in STOP_WORDS and len(w) > 2]
