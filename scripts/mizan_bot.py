@@ -829,6 +829,13 @@ def _build_surah_aliases() -> dict:
         "kafirun": 109, "disbelievers": 109,
         # An-Nasr
         "nasr": 110, "help": 110,
+        # Ash-Sharh / Al-Inshirah (surah 94). SURAH_NAMES holds only the name
+        # "Ash-Sharh", so the surah's SECOND canonical name "Al-Inshirah" and
+        # the Malay/Indonesian spelling "insyirah" are not derivable and must be
+        # explicit. (operator-reported tafsir miss 2026-06-18, msgs #2613/#2615 —
+        # "tafsir of last 2 ayat of al insyirah" resolved to nothing.)
+        "inshirah": 94, "al inshirah": 94, "insyirah": 94, "al insyirah": 94,
+        "alam nashrah": 94, "nashrah": 94,
     }
     aliases.update(extra)
     return aliases
@@ -1072,6 +1079,65 @@ def lookup_surah_tafsir(surah_number: int, max_ayat: int = 7) -> dict:
             "tafsir": tafsir,
         })
     return {"surah_number": surah_number, "ayat": out}
+
+
+def _surah_max_ayah(surah_number: int):
+    """Highest ayah number in a surah — used to resolve 'last N ayat'.
+    Returns int or None on miss/error."""
+    try:
+        rows = supabase_get("ayat", {
+            "surah_number": f"eq.{surah_number}",
+            "select": "ayah_number",
+            "order": "ayah_number.desc",
+            "limit": "1",
+        })
+        return rows[0]["ayah_number"] if rows else None
+    except Exception:
+        return None
+
+
+def extract_ayah_numbers(q: str, surah_number: int):
+    """Extract explicit ayah number(s) from a NATURAL-LANGUAGE verse reference
+    that the colon `S:A` regex doesn't catch.
+
+    Handles: "ayah 7", "ayah 7 and 8", "verses 7-8", "ayat 7 to 9",
+    "last 2 ayat", "first 3 verses". Returns a sorted list of ints (capped at 8),
+    or [] when no explicit ayah is named.
+
+    Rationale (operator tafsir miss #2613/#2615): a verse reference is a
+    STRUCTURED KEY, not a semantic concept. Resolving it here routes the query
+    to a keyed lookup_verse() instead of letting it fall through to keyword FTS /
+    semantic similarity, neither of which can retrieve a verse by its number
+    (measured cosine ~0.20-0.28 even for the exact ayah text — all wrong ayat).
+    """
+    import re
+    # "last N ayat" / "first N verses"
+    m = re.search(r'\b(last|final|first)\s+(\d{1,3})\s+'
+                  r'(?:ayah|ayat|ayahs|aayah|aayat|verse|verses)\b', q)
+    if m:
+        n = int(m.group(2))
+        if n < 1 or n > 8:
+            return []
+        if m.group(1) == 'first':
+            return list(range(1, n + 1))
+        mx = _surah_max_ayah(surah_number)
+        if mx:
+            return list(range(max(1, mx - n + 1), mx + 1))
+        return []
+    # explicit number(s) after an ayah/verse keyword: "ayah 7", "ayah 7 and 8",
+    # "verses 7-8", "ayat 7 to 9"
+    m = re.search(r'\b(?:ayah|ayat|ayahs|aayah|aayat|verse|verses|v)\.?\s*'
+                  r'(\d{1,3})(?:\s*(?:and|&|,|-|–|—|to|through|thru)\s*(\d{1,3}))?', q)
+    if m:
+        a = int(m.group(1))
+        if m.group(2):
+            b = int(m.group(2))
+            lo, hi = min(a, b), max(a, b)
+            if hi - lo <= 8:
+                return list(range(lo, hi + 1))
+            return [lo, hi]
+        return [a]
+    return []
 
 
 def search_quran(keywords, limit=5):
@@ -1593,6 +1659,15 @@ def gather_context(question, meta=None):
     elif isinstance(alias_result, int):
         resolved_surah = alias_result
 
+    # Numeric "surah 94" — the legacy regex below only matched the captured
+    # token against surah NAME strings, so a numeric surah reference in natural
+    # language ("Surah 94 ayah 7") never resolved and fell through to keyword
+    # FTS (operator tafsir miss #2613/#2615). Resolve the number directly first.
+    if resolved_surah is None:
+        snum = re.search(r'\bsurah\s+(\d{1,3})\b', q)
+        if snum and 1 <= int(snum.group(1)) <= 114:
+            resolved_surah = int(snum.group(1))
+
     # Legacy "surah <name>" regex as fallback when alias didn't fire
     if resolved_surah is None:
         surah_match = re.search(r'surah\s+(\w+)', q, re.IGNORECASE)
@@ -1608,8 +1683,21 @@ def gather_context(question, meta=None):
         tafsir_intent = bool(re.search(
             r'\b(tafsir|tafseer|commentary|explanation|explain|meaning)\b', q, re.IGNORECASE
         ))
-        if tafsir_intent:
-            surah_name = SURAH_NAMES.get(resolved_surah, f"Surah {resolved_surah}")
+        surah_name = SURAH_NAMES.get(resolved_surah, f"Surah {resolved_surah}")
+        # If specific ayat are named in natural language ("ayah 7 and 8",
+        # "last 2 ayat"), do a KEYED lookup per ayah — this is the deterministic
+        # path that retrieves the verse + its tafsir by number, instead of the
+        # whole-surah dump (which only covers the first 7 ayat) or a fallthrough
+        # to keyword/semantic search. (operator tafsir miss #2613/#2615)
+        ayat_nums = extract_ayah_numbers(q, resolved_surah)
+        if ayat_nums:
+            for n in ayat_nums[:8]:
+                data = lookup_verse(resolved_surah, n)
+                context_parts.append(
+                    f"VERSE LOOKUP {resolved_surah}:{n} ({surah_name}):\n"
+                    + json.dumps(data, ensure_ascii=False, indent=2)
+                )
+        elif tafsir_intent:
             data = lookup_surah_tafsir(resolved_surah, max_ayat=7)
             context_parts.append(
                 f"FULL SURAH TAFSIR for {surah_name} (Surah {resolved_surah}):\n"
