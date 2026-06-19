@@ -21,6 +21,39 @@ import urllib.error
 import sys
 import os
 import signal
+import datetime
+
+
+# --- Self-contained env loading (msg #2744 hardening) -----------------------
+# The bot invokes the claude CLI with os.environ; when CLAUDE_CODE_OAUTH_TOKEN
+# is absent the CLI silently falls back to the macOS keychain login, which an
+# operator password-reset can invalidate — the #2744 outage. Load ai-scholar/.env
+# (gitignored) at startup so Claude auth + bot config are self-contained and
+# survive a launchd plist rebuild. Process/plist env ALWAYS wins: we only fill
+# keys that are not already set. Runs before the retrieval-module imports below
+# so they see the same populated environment.
+def _load_env_file():
+    env_path = os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+    )
+    try:
+        with open(env_path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"  -> .env load skipped: {type(e).__name__}: {e}")
+
+
+_load_env_file()
 
 # Phase 2 semantic-first retrieval for fiqh substrate.
 # Architectural pivot per CAI-PROCESS-GLUE-AUDIT-MIZANBOT-001 (id 870) hybrid
@@ -38,6 +71,9 @@ SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 CLAUDE_PATH = os.path.expanduser("~/.local/bin/claude")
 # AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135
 PERSIST_FUNCTION_URL = SUPABASE_URL + "/functions/v1/persist-mizan-ruling"
+# Admin chat for the /review scholar-verification export (#2746). Unset = the
+# command self-bootstraps by telling the caller their chat_id (no data leaks).
+ADMIN_CHAT_ID = os.environ.get("MIZAN_ADMIN_CHAT_ID", "").strip()
 
 # --- User prefs (file-based for v0.1) ---
 # The mizan_user_prefs table migration is authored at
@@ -1019,6 +1055,57 @@ def supabase_rpc(fn_name, params):
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
+
+def supabase_patch(path, filters, body):
+    """PATCH a Supabase REST resource. Returns True on success, False on error.
+    Fail-soft: callers ack the user honestly rather than crashing the loop."""
+    url = SUPABASE_URL + "/rest/v1/" + path
+    if filters:
+        url += "?" + urllib.parse.urlencode(filters, safe=":,.()")
+    key = SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="PATCH", headers={
+        "apikey": key,
+        "Authorization": "Bearer " + key,
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status in (200, 204)
+    except Exception as e:
+        print(f"  -> supabase_patch failed: {type(e).__name__}: {e}")
+        return False
+
+
+# --- Scholar-review verification loop (#2746) -------------------------------
+def toggle_review_flag(interaction_id, flagger_hash):
+    """Toggle flagged_for_review on a mizan_interactions row.
+
+    Returns the NEW bool state (True=now flagged, False=now unflagged), or None
+    on error / missing columns (pre-migration) — caller acks honestly, never a
+    false success. flagged_by / flagged_at capture who flagged + when; cleared
+    on unflag.
+    """
+    try:
+        rows = supabase_get("mizan_interactions", {
+            "id": f"eq.{interaction_id}",
+            "select": "flagged_for_review",
+            "limit": "1",
+        })
+    except Exception as e:
+        print(f"  -> flag read failed (columns applied yet?): {type(e).__name__}: {e}")
+        return None
+    if not rows:
+        return None
+    new_state = not bool(rows[0].get("flagged_for_review"))
+    patch = {
+        "flagged_for_review": new_state,
+        "flagged_by": flagger_hash if new_state else None,
+        "flagged_at": datetime.datetime.now(datetime.timezone.utc).isoformat() if new_state else None,
+    }
+    ok = supabase_patch("mizan_interactions", {"id": f"eq.{interaction_id}"}, patch)
+    return new_state if ok else None
 
 
 def lookup_verse(surah, ayah):
@@ -2323,7 +2410,7 @@ def _extract_cited_verses(text, max_verses=6):
     return out
 
 
-def _level_keyboard(current_level, cited_verses=None):
+def _level_keyboard(current_level, cited_verses=None, interaction_id=None):
     """Inline keyboard for audience-tier adjustment + audio recitation.
     Level row (context-aware):
       layman   → [✓ Current: Layman] [🎓 More detail]
@@ -2355,7 +2442,131 @@ def _level_keyboard(current_level, cited_verses=None):
         for i in range(0, len(audio_buttons), 3):
             rows.append(audio_buttons[i:i + 3])
 
+    # Scholar-review flag (#2746) — any user may flag an answer as doubtful so a
+    # human scholar can verify it. Needs the persisted interaction_id, which is
+    # only known after persist (runs after send per CAI-RESP-135), so this row
+    # is injected via _maybe_add_flag_button after the answer is sent.
+    if interaction_id:
+        rows.append([{
+            "text": "🔖 Flag for scholar review",
+            "callback_data": f"flag:{interaction_id}",
+        }])
+
     return {"inline_keyboard": rows}
+
+
+def _maybe_add_flag_button(chat_id, msg_id, level, cited, persist_result):
+    """After persist returns an interaction_id, inject the scholar-review flag
+    button onto the just-sent answer (edit in place, not resend).
+
+    Persist runs AFTER send (CAI-RESP-135: persistence outages must not block
+    replies), so the flag button — which carries the interaction_id — is added
+    in a second step. No-op if send or persistence failed (nothing to flag),
+    which degrades gracefully rather than showing a flag that writes nowhere.
+    """
+    if not msg_id or not isinstance(persist_result, dict):
+        return
+    interaction_id = persist_result.get("interaction_id")
+    if not interaction_id:
+        return
+    try:
+        kb = _level_keyboard(level, cited_verses=cited, interaction_id=interaction_id)
+        tg_request("editMessageReplyMarkup", {
+            "chat_id": chat_id,
+            "message_id": msg_id,
+            "reply_markup": json.dumps(kb),
+        })
+    except Exception as e:
+        print(f"  -> flag-button inject skipped: {type(e).__name__}: {e}")
+
+
+def _send_document(chat_id, filename, file_bytes, caption=None, mime="text/csv"):
+    """Upload an in-memory file to a chat via sendDocument (multipart/form-data).
+    Stdlib-only multipart encoder — the bot has no `requests` dependency."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    boundary = "----MizanReviewBoundary8a3f1c"
+    parts = []
+
+    def _field(name, value):
+        parts.append(
+            (f"--{boundary}\r\n"
+             f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+             f"{value}\r\n").encode("utf-8")
+        )
+
+    _field("chat_id", str(chat_id))
+    if caption:
+        _field("caption", caption)
+    parts.append(
+        (f"--{boundary}\r\n"
+         f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'
+         f"Content-Type: {mime}\r\n\r\n").encode("utf-8")
+        + file_bytes + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(parts)
+    req = urllib.request.Request(url, data=body, headers={
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            ok = json.loads(resp.read().decode("utf-8")).get("ok", False)
+            print(f"  -> /review document sent: ok={ok}")
+            return ok
+    except Exception as e:
+        print(f"  -> sendDocument failed: {type(e).__name__}: {e}")
+        return False
+
+
+def handle_review_export(chat_id):
+    """Admin /review (#2746): compile flagged Q&A + export a scholar-ready
+    spreadsheet (UTF-8-BOM CSV — opens cleanly in Excel/Sheets/Numbers and
+    preserves Arabic). Columns map to the persisted interaction row; madhhab /
+    answer-level are not stored per-interaction in v1, so query_type + tier
+    stand in (v2 note in the migration)."""
+    try:
+        rows = supabase_get("mizan_interactions", {
+            "flagged_for_review": "eq.true",
+            "select": ("id,query_text,response_text,query_type,output_tier,"
+                       "flagged_by,flagged_at,reviewer_note,created_at"),
+            "order": "flagged_at.desc",
+        })
+    except Exception as e:
+        print(f"  -> /review query failed: {type(e).__name__}: {e}")
+        send_message(chat_id,
+            "Couldn't load the review list right now — the flag columns may not "
+            "be applied to the database yet. Try again shortly.")
+        return
+    if not rows:
+        send_message(chat_id, "No answers are currently flagged for scholar review. ✅")
+        return
+
+    import io
+    import csv
+    buf = io.StringIO()
+    buf.write("﻿")  # BOM so Excel reads UTF-8 (Arabic) correctly
+    w = csv.writer(buf)
+    w.writerow(["interaction_id", "question", "answer", "query_type", "tier",
+                "flagged_by", "flagged_at", "reviewer_note", "asked_at"])
+    for r in rows:
+        w.writerow([
+            r.get("id", ""),
+            r.get("query_text", ""),
+            r.get("response_text", ""),
+            r.get("query_type", ""),
+            r.get("output_tier", ""),
+            (r.get("flagged_by") or "")[:12],  # short hash — who, without raw id
+            r.get("flagged_at", ""),
+            r.get("reviewer_note") or "",
+            r.get("created_at", ""),
+        ])
+    data = buf.getvalue().encode("utf-8")
+    n = len(rows)
+    fname = f"mizan_scholar_review_{n}_items.csv"
+    send_message(chat_id, f"🔖 *{n} answer(s) flagged for scholar review.* Exporting spreadsheet…")
+    if not _send_document(chat_id, fname, data,
+                          caption=f"{n} flagged Q&A for scholar verification"):
+        send_message(chat_id, "The list loaded but the file upload failed — try /review again.")
 
 
 def send_message(chat_id, text, reply_markup=None, reply_to_message_id=None):
@@ -2528,6 +2739,45 @@ def main():
                                 pass
                         continue
 
+                    # Scholar-review flag: callback_data = "flag:<interaction_id>"
+                    # Any user may flag/unflag (per operator, #2746). Toggle the
+                    # DB row, ack honestly, and reflect the new state on the button.
+                    if cb_data.startswith("flag:"):
+                        interaction_id = cb_data.split(":", 1)[1]
+                        flagger_hash = _hash_telegram_id(cb.get("from", {}).get("id"))
+                        new_state = toggle_review_flag(interaction_id, flagger_hash)
+                        if new_state is True:
+                            ack = "🔖 Flagged for scholar review, jazakAllahu khairan."
+                        elif new_state is False:
+                            ack = "Removed from the scholar-review list."
+                        else:
+                            ack = "Couldn't record that just now — please try again shortly."
+                        try:
+                            tg_request("answerCallbackQuery", {
+                                "callback_query_id": cb_id, "text": ack,
+                            })
+                        except Exception:
+                            pass
+                        # Reflect state on the button, preserving level + audio rows.
+                        if new_state is not None and cb_chat:
+                            msg_obj = cb.get("message", {})
+                            kb_rows = (msg_obj.get("reply_markup") or {}).get("inline_keyboard", [])
+                            for kb_row in kb_rows:
+                                for btn in kb_row:
+                                    if btn.get("callback_data", "").startswith("flag:"):
+                                        btn["text"] = ("✅ Flagged — tap to undo" if new_state
+                                                       else "🔖 Flag for scholar review")
+                            try:
+                                tg_request("editMessageReplyMarkup", {
+                                    "chat_id": cb_chat,
+                                    "message_id": msg_obj.get("message_id"),
+                                    "reply_markup": json.dumps({"inline_keyboard": kb_rows}),
+                                })
+                            except Exception:
+                                pass
+                        print(f"  -> Flag toggle for {interaction_id[:8]} -> {new_state}")
+                        continue
+
                     if not cb_chat or not cb_data.startswith("level:"):
                         # Ack with nothing if malformed
                         try:
@@ -2622,12 +2872,14 @@ def main():
                         # button tap after a restart still re-answers at the right depth.
                         save_chat_state(cb_chat, last_q, new_level)
                         print(f"  -> Reformatted response sent ({len(answer)} chars) at {new_level}")
-                        persist_emission(
+                        persist_result = persist_emission(
                             cb_chat, last_q, answer,
                             retrieval_ids=retrieval_meta.retrieval_ids,
                             matched_passage_id=retrieval_meta.matched_passage_id,
                             retrieval_config=retrieval_meta.retrieval_config,
                         )
+                        # #2746: add the scholar-review flag button to the re-answer.
+                        _maybe_add_flag_button(cb_chat, msg_id, new_level, cited, persist_result)
                     except Exception as e:
                         print(f"  Callback re-answer failed: {type(e).__name__}: {e}")
                         send_message(cb_chat,
@@ -2716,6 +2968,26 @@ def main():
                     sessions.pop(chat_id, None)
                     send_message(chat_id, "🔄 Conversation cleared. Ask me anything fresh.")
                     print("  -> /clear response sent")
+                    continue
+
+                # /review — admin-only scholar-verification export (#2746).
+                # Unregistered (hidden) command; gated on MIZAN_ADMIN_CHAT_ID.
+                if text == "/review" or text.startswith("/review "):
+                    requester = str(chat_id)
+                    if not ADMIN_CHAT_ID:
+                        send_message(chat_id,
+                            "🔒 /review is admin-only and no admin is configured yet.\n\n"
+                            f"Your chat_id is `{requester}`.\n"
+                            "Set `MIZAN_ADMIN_CHAT_ID` to this value in ai-scholar/.env "
+                            "(or the launchd plist) and restart to enable.")
+                        print(f"  -> /review unconfigured; reported chat_id {requester}")
+                        continue
+                    if requester != str(ADMIN_CHAT_ID):
+                        send_message(chat_id, "🔒 This command is restricted to the operator.")
+                        print(f"  -> /review denied for {requester}")
+                        continue
+                    handle_review_export(chat_id)
+                    print("  -> /review export handled")
                     continue
 
                 # /madhhab — set or query user's school preference
@@ -2898,12 +3170,15 @@ def main():
                     # fail-soft so persistence outages don't block user replies.
                     # F-2 (tafsir-defense-funnel): thread matched_passage_id + retrieval_ids
                     # collected from this turn's retrievals so the audit row reflects reality.
-                    persist_emission(
+                    persist_result = persist_emission(
                         chat_id, text, answer,
                         retrieval_ids=retrieval_meta.retrieval_ids,
                         matched_passage_id=retrieval_meta.matched_passage_id,
                         retrieval_config=retrieval_meta.retrieval_config,
                     )
+                    # #2746: add the scholar-review flag button now that we have
+                    # the interaction_id (persist runs after send per RESP-135).
+                    _maybe_add_flag_button(chat_id, msg_id, session["answer_level"], cited, persist_result)
                 except Exception as msg_err:
                     # Per-message exception handler — don't leave user hanging.
                     err_short = type(msg_err).__name__
