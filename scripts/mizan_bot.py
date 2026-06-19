@@ -1999,6 +1999,42 @@ LEVEL_GUIDANCE = {
 }
 
 
+# --- Claude CLI failure classification (msg #2737) -------------------------
+# Operator hit a generic "Error: unknown" caused by a transient network blip
+# (logs showed "No route to host"/Errno 65, "Connection reset by peer",
+# "read operation timed out") that made the CLI call fail. Network blips fail
+# FAST and recover on retry; a genuine processing error does not. We classify
+# the failure, retry the transient kind with short backoff, and surface an
+# honest, cause-fit message instead of the catch-all "Error: unknown".
+_CLI_NETWORK_HINTS = (
+    "no route to host", "errno 65", "errno 54", "errno 60", "errno 51",
+    "connection reset", "connection refused", "connection aborted",
+    "broken pipe", "network is unreachable", "could not resolve",
+    "temporary failure in name resolution", "name or service not known",
+    "getaddrinfo", "eof occurred", "ssl", "timed out", "timeout",
+)
+
+# Honest, cause-fit user messages — never "Error: unknown".
+_CLI_NETWORK_MSG = (
+    "I hit a temporary connection issue and couldn't reach my source — "
+    "please send that again in a moment, inshaAllah. 🌿"
+)
+_CLI_PROCESSING_MSG = (
+    "I couldn't process that question just now. Please try rephrasing it, "
+    "or send it again shortly."
+)
+_CLI_UNEXPECTED_MSG = (
+    "Something went wrong on my end while answering — please try again in a "
+    "moment, inshaAllah."
+)
+
+
+def _is_transient_cli_error(detail) -> bool:
+    """True if a Claude-CLI failure detail looks like a transient network blip."""
+    t = (detail or "").lower()
+    return any(h in t for h in _CLI_NETWORK_HINTS)
+
+
 def ask_claude(question, context, history=None, answer_level="seeker", madhhab=None):
     """Use Claude Code CLI to reason over the context.
 
@@ -2098,21 +2134,52 @@ Respond directly to the user's question:"""
     # was producing "taking too long" timeout messages on legitimate
     # well-reasoned answers. 180s gives 3x headroom while still bounding
     # bot's polling-loop latency.
-    try:
-        result = subprocess.run(
-            [CLAUDE_PATH, "-p", prompt, "--output-format", "text"],
-            capture_output=True, text=True, timeout=180,
-            env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-        else:
-            return f"I encountered an issue processing your question. Error: {result.stderr[:200] if result.stderr else 'unknown'}"
-    except subprocess.TimeoutExpired:
-        return ("I'm taking longer than usual to think this through — the topic needs careful "
-                "consideration. Try asking again, or rephrase as a more specific question.")
-    except Exception as e:
-        return f"Error: {str(e)}"
+    # Auto-retry transient network failures (msg #2737). The bot already retries
+    # the Telegram polling loop on network errors; apply the same resilience to
+    # the answer path. Network blips fail fast, so 3 attempts with 2s/4s backoff
+    # adds little latency while recovering from the common case. A 180s timeout
+    # is NOT retried — it means slow synthesis, not a blip, and 3×180s would
+    # strand the user.
+    max_attempts = 3
+    last_detail = ""
+    for attempt in range(max_attempts):
+        try:
+            result = subprocess.run(
+                [CLAUDE_PATH, "-p", prompt, "--output-format", "text"],
+                capture_output=True, text=True, timeout=180,
+                env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            # Non-zero exit or empty output — inspect both streams for cause.
+            detail = ((result.stderr or "") + " " + (result.stdout or "")).strip()
+            last_detail = detail[:200] or "empty output"
+            if _is_transient_cli_error(detail):
+                if attempt < max_attempts - 1:
+                    print(f"  -> Claude CLI transient failure (attempt {attempt + 1}/{max_attempts}): {last_detail[:120]}")
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                print(f"  -> Claude CLI transient failure exhausted: {last_detail[:120]}")
+                return _CLI_NETWORK_MSG
+            # Genuine, non-transient processing error — honest, not "unknown".
+            print(f"  -> Claude CLI processing error: {last_detail[:120]}")
+            return _CLI_PROCESSING_MSG
+        except subprocess.TimeoutExpired:
+            return ("I'm taking longer than usual to think this through — the topic needs careful "
+                    "consideration. Try asking again, or rephrase as a more specific question.")
+        except Exception as e:
+            last_detail = str(e)[:200]
+            if _is_transient_cli_error(str(e)) and attempt < max_attempts - 1:
+                print(f"  -> Claude CLI transient exception (attempt {attempt + 1}/{max_attempts}): {last_detail[:120]}")
+                time.sleep(2 * (attempt + 1))
+                continue
+            if _is_transient_cli_error(str(e)):
+                print(f"  -> Claude CLI transient exception exhausted: {last_detail[:120]}")
+                return _CLI_NETWORK_MSG
+            print(f"  -> Claude CLI unexpected error: {last_detail[:120]}")
+            return _CLI_UNEXPECTED_MSG
+    # All attempts exhausted on transient failures.
+    return _CLI_NETWORK_MSG
 
 
 # --- Persistence helper (AL-BAYAN-COMPOSE-001 / CAI-RESP-135) ---
