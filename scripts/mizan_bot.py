@@ -75,6 +75,15 @@ PERSIST_FUNCTION_URL = SUPABASE_URL + "/functions/v1/persist-mizan-ruling"
 # command self-bootstraps by telling the caller their chat_id (no data leaks).
 ADMIN_CHAT_ID = os.environ.get("MIZAN_ADMIN_CHAT_ID", "").strip()
 
+# CAI-RESP-287 class-B label — every AI-generated answer is a draft for
+# reflection, NOT a fatwa. Appended to the displayed answer (not persisted, not
+# fed back into conversation history). Tasteful but unmissable per the ihsan bar.
+AI_DRAFT_DISCLAIMER = (
+    "\n\n———\n"
+    "ℹ️ _AI draft for reflection — not a fatwa. Pending scholarly review; "
+    "please verify with a qualified scholar._"
+)
+
 # --- User prefs (file-based for v0.1) ---
 # The mizan_user_prefs table migration is authored at
 # supabase/migrations/20260603_001_mizan_user_prefs.sql but not yet applied
@@ -417,6 +426,58 @@ def match_ruling_query(text: str) -> bool:
     if any(kw in t.split() for kw in RULING_KEYWORDS):
         return True
     for pattern in RULING_PHRASES:
+        if re.search(pattern, t):
+            return True
+    return False
+
+
+# CAI-RESP-287 class C — high-consequence / irreversible matters that must NOT
+# receive an AI ruling (mis-stating these is spiritual liability before legal).
+# Route to a human scholar instead. Conservative by design: better to over-route
+# to a human than under-route.
+HIGH_STAKES_KEYWORDS = {
+    # Divorce — irreversible marital dissolution
+    "talaq", "talak", "ṭalāq", "divorce", "divorces", "divorcing", "divorced",
+    "khula", "khulʿ", "khul", "faskh", "annul", "annulment",
+    # Inheritance / estate division (farāʾiḍ)
+    "inheritance", "inherit", "inherits", "inheriting", "inherited",
+    "faraid", "farāʾiḍ", "mirath", "mīrāth", "warith", "heir", "heirs",
+    "estate", "bequest", "wasiyyah", "wasiyya",
+    # Other grave / irreversible
+    "apostasy", "apostate", "riddah", "murtad",
+}
+HIGH_STAKES_PHRASES = [
+    r"how\s+(do|can|should)\s+i\s+divorce",
+    r"divorce\s+my\s+(wife|husband|spouse)",
+    r"(should|can)\s+i\s+divorce",
+    r"(three|triple)\s+tala[qk]",
+    r"divide\s+(the\s+|my\s+|his\s+|her\s+)?(inheritance|estate|property|wealth)",
+    r"share\s+of\s+(the\s+)?inheritance",
+    r"who\s+(gets|inherits|should inherit)",
+    r"leav(e|ing)\s+islam",
+    r"renounce\s+islam",
+]
+
+
+def match_high_stakes_query(text: str) -> bool:
+    """High-consequence / irreversible matters (divorce, inheritance, apostasy)
+    that must route to a human scholar, NOT an AI ruling (CAI-RESP-287 class C).
+
+    Carve-out: explicit tafsir / verse-lookup requests are educational, not
+    personal-ruling requests, so they flow to normal retrieval — the bot's core
+    function (e.g. explaining the inheritance verses of Sūrat an-Nisāʾ) must not
+    be blocked. Personal action-framed questions ("how do I divorce…") still route.
+    """
+    import re
+    t = text.lower()
+    # Educational tafsir / verse lookups are not personal high-stakes rulings.
+    if re.search(r"\btafsir\b|\btafseer\b|meaning of (the )?(surah|sura|ayah|ayat|verse)", t):
+        return False
+    if re.search(r"\b\d{1,3}\s*[:：]\s*\d{1,3}\b", t):  # surah:ayah reference
+        return False
+    if any(re.search(r"\b" + re.escape(kw) + r"\b", t) for kw in HIGH_STAKES_KEYWORDS):
+        return True
+    for pattern in HIGH_STAKES_PHRASES:
         if re.search(pattern, t):
             return True
     return False
@@ -2865,7 +2926,7 @@ def main():
                         # Don't append to history a second time — just update last_*
                         session["last_context"] = context
                         cited = _extract_cited_verses(answer)
-                        msg_id = send_message(cb_chat, answer, reply_markup=_level_keyboard(new_level, cited_verses=cited))
+                        msg_id = send_message(cb_chat, answer + AI_DRAFT_DISCLAIMER, reply_markup=_level_keyboard(new_level, cited_verses=cited))
                         if msg_id:
                             session.setdefault("level_responses", {})[new_level] = msg_id
                         # Persist the now-sticky level (last_q unchanged) so a further
@@ -3026,6 +3087,36 @@ def main():
                     print(f"  -> /madhhab handled (arg={parts[1] if len(parts) > 1 else 'show'})")
                     continue
 
+                # CAI-RESP-287 class C — high-consequence / irreversible matters
+                # (divorce, inheritance, apostasy) must NOT receive an AI ruling.
+                # Route to a human scholar with care. Sits BEFORE the general
+                # scholar gate so the more careful message wins. Persist first
+                # (no Claude call here, so no user-perceptible latency) so the
+                # question can be flagged into the scholar queue — flag-ONLY
+                # keyboard (no level buttons: those would re-trigger an AI answer
+                # on the very topic we're refusing to rule on).
+                if match_high_stakes_query(text):
+                    routing_msg = (
+                        "⚠️ *This carries serious consequence.*\n\n"
+                        "Questions touching divorce, inheritance, or other grave or "
+                        "irreversible matters shouldn't rest on an AI draft — a mistake "
+                        "here carries real spiritual and legal weight.\n\n"
+                        "Please consult a qualified scholar (mufti) directly — in "
+                        "Singapore, MUIS or an ARS-certified ustadh/ustazah.\n\n"
+                        "_Tap below to flag this so a scholar can follow up, in shāʾ Allāh._"
+                    )
+                    hs_persist = persist_emission(chat_id, text, routing_msg)
+                    hs_iid = hs_persist.get("interaction_id") if isinstance(hs_persist, dict) else None
+                    hs_kb = None
+                    if hs_iid:
+                        hs_kb = {"inline_keyboard": [[
+                            {"text": "🔖 Flag for scholar review",
+                             "callback_data": f"flag:{hs_iid}"},
+                        ]]}
+                    send_message(chat_id, routing_msg, reply_markup=hs_kb)
+                    print("  -> Class C high-stakes routing (consult-a-scholar)")
+                    continue
+
                 # Scholar gate — fires on ruling-class queries (halal/haram/fatwa)
                 # but NOT on fiqh-topic queries (wudu/salah/etc.). Topic queries
                 # route through juridical_translations retrieval downstream.
@@ -3160,7 +3251,7 @@ def main():
                                               if w not in STOP_WORDS and len(w) > 2]
 
                     cited = _extract_cited_verses(answer)
-                    msg_id = send_message(chat_id, answer, reply_markup=_level_keyboard(session["answer_level"], cited_verses=cited))
+                    msg_id = send_message(chat_id, answer + AI_DRAFT_DISCLAIMER, reply_markup=_level_keyboard(session["answer_level"], cited_verses=cited))
                     if msg_id:
                         session["level_responses"][session["answer_level"]] = msg_id
                     print(f"  -> Response sent ({len(answer)} chars, audio buttons: {len(cited)})")
