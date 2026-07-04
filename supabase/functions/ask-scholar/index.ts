@@ -960,8 +960,14 @@ Deno.serve(async (req: Request) => {
     // Stage 1: Normalize
     const keywords = normalize(rawQuery);
 
-    // Stage 2: Scholar Gate (fiqh detection)
-    if (detectFiqh(keywords, rawQuery)) {
+    // Stage 2: Scholar Gate (F-3). Fire on the keyword/phrase detector OR the
+    // query-type classifier — the REAL-TIME gate is now classification-driven,
+    // not just the stored audit label. Before this, detectFiqh() and
+    // classifyQueryType() had diverged: ruling-class queries with no explicit
+    // fiqh vocabulary ("do eyelash extensions prevent wudhu") were labelled
+    // query_type='ruling' but sailed past the real-time gate. (mizan review
+    // #6489; cc-orchestrator approved 2026-07-05.)
+    if (detectFiqh(keywords, rawQuery) || queryType === "ruling") {
       const shape = buildScholarGateResponse(rawQuery);
       await tryPersist({
         telegram_id_hash: telegramIdHash,
