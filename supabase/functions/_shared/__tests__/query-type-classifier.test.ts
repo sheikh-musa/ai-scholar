@@ -14,6 +14,18 @@ const cases: Array<[string, string]> = [
   ["Does the husband have to pay for separate housing?",         "ruling"],
   ["Is she required to fast the missed days before next Ramadan?", "ruling"],
   ["Are they allowed to combine prayers while travelling?",        "ruling"],
+  // 2026-07-05 mizan quality review (#6489): ruling-class queries carrying NO
+  // explicit halal/haram/must vocabulary were falling to 'definition'/'other',
+  // leaving the F-3 scholar-gate + INV-6 action_prompt dark (0 'ruling' across
+  // 27 recent Qs). New intent classes: invalidation-of-ibadah, quantity-of-
+  // obligation, intimacy-during-a-ritual-state, permissibility-defining consumables.
+  ["do eyelash extensions prevent wudhu",              "ruling"],
+  ["if i masbuk the friday prayer in tashahud do i pray 2 rakaats or 4", "ruling"],
+  ["what are the intimacy limits with my wife when she is on her period", "ruling"],
+  ["hadith on eating donkey meat",                     "ruling"],
+  // Guards: ordinary food + non-consumption mentions must NOT become 'ruling'.
+  ["hadith on eating dates",                           "other"],
+  ["rivers of wine in paradise",                       "other"],
 
   ["What is the meaning of tawakkul?",                  "definition"],
   ["Define ijma",                                       "definition"],

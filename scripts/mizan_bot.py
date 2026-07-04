@@ -854,9 +854,15 @@ def _build_surah_aliases() -> dict:
 
     # Hand-coded transliteration variants for frequently-asked surahs
     extra: dict = {
-        # Al-Fatihah
+        # Al-Fatihah — incl. the 'e'-vowel transliteration ("fateha"), which is
+        # one of the most common spellings and was a live retrieval miss
+        # (mizan quality review 2026-07-05: "What does al fateha mean?" fell
+        # through to keyword FTS -> unrelated surahs, because only the 'i'-vowel
+        # spellings were aliased). The most-recited surah must resolve robustly.
         "fatiha": 1, "fatihah": 1, "al fatiha": 1, "al fatihah": 1,
-        "al-fatiha": 1, "al-fatihah": 1, "fatiha": 1, "opening": 1,
+        "al-fatiha": 1, "al-fatihah": 1, "opening": 1,
+        "fateha": 1, "fatehah": 1, "al fateha": 1, "al-fateha": 1,
+        "faatiha": 1, "faatihah": 1, "fatiah": 1, "fatihatul kitab": 1,
         # Al-Baqarah
         "baqara": 2, "baqarah": 2, "al baqara": 2, "al baqarah": 2,
         "al-baqara": 2, "al-baqarah": 2, "cow": 2,
@@ -2183,6 +2189,83 @@ def _is_transient_cli_error(detail) -> bool:
     return any(h in t for h in _CLI_NETWORK_HINTS)
 
 
+def _lean_prompt(question, context, max_ctx=8000) -> str:
+    """A stripped-down synthesis prompt for the post-timeout FAST retry.
+
+    The 22% dead-end-stub rate (mizan quality review #6489) came from full
+    synthesis exceeding the 180s timeout — often on heavy retrieval context
+    (30-40KB). A leaner prompt over trimmed context returns far more often.
+    Preserves the load-bearing rules: answer ONLY from the data (F-1), never
+    fabricate isnads (F-4), never issue a ruling (F-3), quote Arabic + attribution.
+    """
+    ctx = context if len(context) <= max_ctx else context[:max_ctx] + "\n…[context trimmed for a faster answer]…"
+    return (
+        'You are Mizan, an Islamic knowledge assistant. Answer the question ONLY '
+        'from the data below — do not invent verses, tafsir, or hadith, and NEVER '
+        'issue a fiqh ruling (if it is a ruling question, say plainly it needs a '
+        'qualified scholar). Be CONCISE (well under 3500 characters). Include Arabic '
+        'for any Quran verse, and keep source attribution on quoted passages.\n\n'
+        f'QUESTION: "{question}"\n\nDATA:\n{ctx}\n\nAnswer directly and concisely:'
+    )
+
+
+def _evidence_fallback(question, context) -> str:
+    """Last-resort answer built from the retrieval that ALREADY succeeded, with
+    NO LLM call — used only when both the full and the trimmed synthesis time out.
+
+    The old behaviour returned a dead-end stub and threw the sourced evidence
+    away. Surfacing the retrieved passages instead keeps the funnel's promise
+    (evidence-first, F-1/F-2) and hands the user something real. It quotes only
+    retrieved rows (F-4) and states no ruling (F-3).
+    """
+    def _clip(s, n):
+        s = " ".join(str(s or "").split())
+        return s if len(s) <= n else s[:n].rstrip() + "…"
+
+    parts = []
+    for block in (context or "").split("\n\n---\n\n"):
+        block = block.strip()
+        if not parts and not block:
+            continue
+        nl = block.find("\n")
+        header, body = (block[:nl], block[nl + 1:]) if nl != -1 else (block, "")
+        try:
+            data = json.loads(body)
+        except Exception:
+            continue
+        items = data if isinstance(data, list) else [data]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if it.get("arabic") and it.get("translation"):
+                name = it.get("surah_name") or f"Surah {it.get('surah')}"
+                seg = [f"📖 *{name} {it.get('surah')}:{it.get('ayah')}*",
+                       f"> {_clip(it['arabic'], 500)}",
+                       f"_{_clip(it['translation'], 500)}_"]
+                for t in (it.get("tafsir") or [])[:1]:
+                    seg.append(f"📝 {_clip(t.get('scholar_name'), 40)}: {_clip(t.get('english_text'), 600)}")
+                parts.append("\n".join(seg))
+            else:
+                for k in ("english_text", "matn", "text", "english_translation", "translation"):
+                    if it.get(k):
+                        parts.append(f"📝 {_clip(it.get('scholar_name') or it.get('source_work') or header, 50)}: {_clip(it[k], 600)}")
+                        break
+        if sum(len(p) for p in parts) > 3200:
+            break
+
+    if not parts:
+        # No parseable evidence (rare) — honest, not a dead-end loop-back.
+        return ("That one's taking longer than I can hold the line for right now. "
+                "Please send it again in a moment, inshaAllah — it usually goes "
+                "through on a second try. 🌿")
+
+    return ("⏳ The full write-up is taking longer than usual, so here is the "
+            "sourced evidence directly — ask again for a fuller explanation.\n\n"
+            + "\n\n".join(parts[:6])
+            + "\n\n_Sourced from the retrieved corpus; this is evidence, not a ruling — "
+            "for a fiqh verdict consult a qualified scholar._")
+
+
 def ask_claude(question, context, history=None, answer_level="seeker", madhhab=None):
     """Use Claude Code CLI to reason over the context.
 
@@ -2293,7 +2376,7 @@ Respond directly to the user's question:"""
     for attempt in range(max_attempts):
         try:
             result = subprocess.run(
-                [CLAUDE_PATH, "-p", prompt, "--output-format", "text"],
+                [CLAUDE_PATH, "-p", prompt, "--model", "claude-sonnet-5", "--output-format", "text"],
                 capture_output=True, text=True, timeout=180,
                 env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
             )
@@ -2313,8 +2396,27 @@ Respond directly to the user's question:"""
             print(f"  -> Claude CLI processing error: {last_detail[:120]}")
             return _CLI_PROCESSING_MSG
         except subprocess.TimeoutExpired:
-            return ("I'm taking longer than usual to think this through — the topic needs careful "
-                    "consideration. Try asking again, or rephrase as a more specific question.")
+            # Slow synthesis, not a blip (so NOT the 3× transient retry). Try ONE
+            # trimmed, shorter-timeout pass — heavy retrieval context is the usual
+            # cause and a leaner prompt frequently returns. If that ALSO times out,
+            # degrade to an evidence-grounded answer built from the retrieval that
+            # already succeeded (F-1/F-2) — never the old dead-end stub that threw
+            # the sourced evidence away and left the user with nothing (#6489).
+            print("  -> Claude CLI timeout at 180s; trying one trimmed 90s pass")
+            try:
+                retry = subprocess.run(
+                    [CLAUDE_PATH, "-p", _lean_prompt(question, context), "--model", "claude-sonnet-5", "--output-format", "text"],
+                    capture_output=True, text=True, timeout=90,
+                    env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
+                )
+                if retry.returncode == 0 and retry.stdout.strip():
+                    print("  -> trimmed retry returned a real answer")
+                    return retry.stdout.strip()
+            except subprocess.TimeoutExpired:
+                print("  -> trimmed retry also timed out; falling back to retrieved evidence")
+            except Exception as e:
+                print(f"  -> trimmed retry errored ({type(e).__name__}); falling back to retrieved evidence")
+            return _evidence_fallback(question, context)
         except Exception as e:
             last_detail = str(e)[:200]
             if _is_transient_cli_error(str(e)) and attempt < max_attempts - 1:

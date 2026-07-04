@@ -65,6 +65,32 @@ const RULING_PHRASES = [
   /is\s+it\s+(required|necessary|enough|sufficient|valid|invalid)/i,
   // Direct "is X haram/halal" with the predicate-form (not just preceded by "to")
   /^(is|are)\s+\S+(\s+\S+)*\s+(halal|haram|permissible|forbidden|allowed)\b/i,
+
+  // 2026-07-05 mizan quality review (#6489): ruling-class queries carrying NO
+  // explicit halal/haram/must vocabulary were classified 'definition'/'other',
+  // leaving the F-3 scholar-gate + INV-6 action_prompt DARK (0 'ruling' across
+  // 27 recent Qs). These target the intent classes the keyword + first-person
+  // patterns miss. Ruling keeps top priority, so they also win over the greedy
+  // DEFINITION /^what (is|are) .../ pattern that was swallowing "what are the
+  // intimacy limits ..." into 'definition'.
+  // (a) Validity / invalidation of an act of worship ("do eyelash extensions
+  //     prevent wudhu", "does X break the fast", "is my wudu valid if ...").
+  /\b(prevent|invalidat|nullif|break|breaks|voids?|annul|dissolve|violate|spoil)\w*\b[^?.]{0,45}\b(wudu|wudhu|wudoo|ablution|salah|salat|solat|prayer|fast(ing)?|sawm|saum|siyam|ghusl|tayammum|hajj|umrah|i'?tikaf)\b/i,
+  /\b(wudu|wudhu|ablution|salah|salat|solat|prayer|fast(ing)?|sawm|ghusl|hajj)\b[^?.]{0,45}\b(valid|invalid|nullified|broken|void|counts?|acceptable|still\s+count)\b/i,
+  // (b) Quantity of an obligation ("do i pray 2 rakaats or 4", "how many rakaat").
+  /\bhow\s+many\s+(rak'?ah|rakah|rakat|raka'?at|rakaat|times)\b/i,
+  /\bdo\s+i\s+(pray|fast|repeat|make\s+up|perform)\b[^?.]{0,30}\b(rak'?ah|rakah|rakat|rakaat|\d)\b/i,
+  /\b\d\s+or\s+\d\b[^?.]{0,20}\b(rak'?ah|rakah|rakat|rakaat)\b/i,
+  // (c) Marital-intimacy boundaries tied to a ritual state (menses/nifas/ihram/fast).
+  /\b(intimacy|intimate|touch(ing)?|sex(ual)?|relations|conjugal|marital|foreplay)\b[^?.]{0,55}\b(period|menstruat\w*|menses|haid|hayd|hayz|nifas|ihram|fasting|while\s+fast)\b/i,
+  /\b(period|menstruat\w*|menses|haid|hayd|hayz|nifas)\b[^?.]{0,55}\b(intimacy|intimate|touch(ing)?|sex(ual)?|relations|conjugal|marital)\b/i,
+  /\b(limits?|boundar(y|ies)|rules?|conditions?)\b[^?.]{0,20}\b(of|on|for|to|with|during|when)\b[^?.]{0,45}\b(intimacy|sex|touch|fast\w*|prayer|wudu|menstruat\w*|period|ihram|nikah|marriage)\b/i,
+  // (d) Canonically permissibility-defining consumables ("hadith on eating
+  //     donkey meat"). Scoped to a closed set of prohibition-defining items +
+  //     an adjacent consumption verb, so ordinary food queries ("hadith on
+  //     eating dates") stay 'other' and "rivers of wine in Paradise" does not fire.
+  /\b(eat\w*|drink\w*|consum\w*|meat\s+of|flesh\s+of|slaughter\w*)\b[^?.]{0,25}\b(donkey|mule|pork|swine|pig|khinzir|khamr|alcohol|wine|liquor|carrion|maytah|maitah|dog|predator|reptile|frog|crocodile|blood)\b/i,
+  /\b(donkey|pork|swine|khinzir|khamr|alcohol|carrion|maytah)\b[^?.]{0,25}\b(halal|haram|permissible|forbidden|allowed|eat\w*|meat|flesh)\b/i,
 ];
 
 const DEFINITION_PHRASES = [
@@ -83,7 +109,7 @@ const DEFINITION_PHRASES = [
 const BIOGRAPHY_PHRASES = [
   /^who\s+(is|was|were)\s+(imam\s+|sheikh\s+|shaykh\s+)?[a-z؀-ۿ'"\s-]+\??$/i,
   /biography\s+of/i,
-  /tell\s+me\s+about\s+(imam|sheikh|shaykh|companion|sahabi|tabi)/i,
+  /tell\s+me\s+about\s+(the\s+)?(imam|sheikh|shaykh|companion|sahabi|sahaba|tabi)/i,
   // Arabic-name prefixes (Ibn/Abu/Al-/Umm/Abd/Hafiz/etc.) without requiring imam/sheikh title
   // (added 2026-05-27 after self-test showed "tell me about ibn taymiyyah" classified as 'other')
   /tell\s+me\s+about\s+(ibn|abu|al-|umm|abd|ʿabd|hafiz|sayyid|sayyida|mulla|allamah|allama|ustadh|ustaz|hadrat|h\.\s)/i,
