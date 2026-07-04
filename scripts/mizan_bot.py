@@ -1347,6 +1347,45 @@ def search_tafsir(keywords, limit=5):
     return {"results": results}
 
 
+# --- FTS relevance floor (coverage-based) -------------------------------------
+# ts_rank is NOT usable as a cross-query relevance floor: measured live (mizan
+# review #6489), a legitimate "gratitude" tafsir hit (ts_rank 0.061) ranks BELOW
+# an off-topic "prevent"->"prevent death" noise hit (0.087) — ts_rank scales with
+# term-frequency/doc-length, not topicality. The OR-joined keyword FTS query
+# therefore surfaces a passage that hit a single GENERIC word while the
+# distinctive query terms matched nothing (e.g. "do eyelash extensions prevent
+# wudhu" -> the Al-'Imran 3:168 "prevent death" ayah). COVERAGE is separable:
+# keep an FTS hit only if the matched text contains a DISTINCTIVE (non-generic)
+# query term, or >=2 query terms. Applied to FTS rows only — semantic hits are
+# topical by embedding and carry their own cosine gate.
+_FTS_GENERIC = {
+    "prevent", "prevents", "prevented", "make", "makes", "made", "making",
+    "give", "gives", "given", "giving", "take", "takes", "taken", "taking",
+    "use", "uses", "used", "using", "get", "gets", "got", "getting", "keep",
+    "keeps", "kept", "put", "puts", "come", "comes", "came", "want", "wants",
+    "wanted", "need", "needs", "needed", "help", "helps", "tell", "tells",
+    "told", "ask", "asks", "asked", "say", "says", "said", "know", "knows",
+    "known", "thing", "things", "way", "ways", "time", "times", "people",
+    "person", "find", "finds", "found", "show", "shows", "showed", "work",
+    "works", "good", "bad", "many", "much", "more", "most", "some", "between",
+}
+
+
+def _fts_topical(words, text) -> bool:
+    """True if an FTS-matched *text* genuinely covers the query — it contains a
+    distinctive (non-generic) query term, or >=2 query terms. Prefix match (5
+    chars) absorbs FTS stemming (extensions->extension, praying->pray). Returns
+    True when there is nothing to check against, so it never over-filters."""
+    tl = (text or "").lower()
+    content = [w for w in (words or []) if len(w) >= 3]
+    if not content:
+        return True
+    distinctive = [w for w in content if w not in _FTS_GENERIC]
+    if any(w[:5] in tl for w in distinctive):
+        return True
+    return sum(1 for w in content if w[:5] in tl) >= 2
+
+
 def count_mentions(word):
     """Count verses mentioning a word."""
     rows = supabase_get("ayat", {
@@ -1882,6 +1921,10 @@ def gather_context(question, meta=None):
         has_quran = any(k in p for p in context_parts for k in ("VERSE", "TOPIC", "COUNT", "SURAH"))
         if not has_quran:
             data = search_quran(fts_query, limit=3)
+            # Relevance floor: drop OR-keyword noise (hits that matched only a
+            # generic word; #6489). Coverage against the ayah translation.
+            data["results"] = [r for r in data["results"]
+                               if _fts_topical(words, r.get("english_translation") or r.get("translation") or "")]
             if data["results"]:
                 context_parts.append(f"QURAN SEARCH:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
                 # Get tafsir for top result
@@ -1896,6 +1939,11 @@ def gather_context(question, meta=None):
         # than the ayah translation).
         if _ctx_size(context_parts) < MAX_CONTEXT:
             tdata = search_tafsir(fts_query, limit=5)
+            # Relevance floor: drop OR-keyword noise before the FTS+semantic
+            # merge (the "prevent"->"prevent death" class; #6489). FTS rows only;
+            # semantic hits below are topical by embedding.
+            tdata["results"] = [r for r in tdata["results"]
+                               if _fts_topical(words, r.get("english_text", ""))]
 
             # HYBRID supplement: semantic-rerank tafsir, same head-to-head
             # logic as hadith path. FTS retains the matched_passage F-2
@@ -2316,11 +2364,17 @@ Here is the relevant data from the Quran, tafsir, and hadith database:
 RULES:
 - Use ONLY the provided data to answer. Do not make up verses, tafsir, or hadiths.
 - NEVER issue fiqh rulings.
-- WHENEVER a "FIQH MATCHED PASSAGES" block is present in the context above,
-  you MUST surface the matn passage in your response. Do not omit or summarize
-  it — quote VERBATIM with full attribution: "Safīnat al-Najā (<Chapter>,
-  al-Marbūqī tr., al-inaam.com 2009)" where <Chapter> is the baab name from
-  the FIQH MATCHED PASSAGES block. The matn is the Shafi'i school's specific
+- RELEVANCE GATE (check FIRST): a matched block (FIQH MATCHED PASSAGES / TAFSIR
+  MATCHED PASSAGES / QURAN SEARCH) is retrieval, not a guarantee of relevance.
+  If a block is OFF-TOPIC for the question — it overlaps only on an incidental
+  keyword and does not actually address what was asked — do NOT surface it.
+  Say plainly that the corpus doesn't carry material on this specific point and
+  stop; never pad an answer with unrelated matn/tafsir just because it matched.
+- WHENEVER a "FIQH MATCHED PASSAGES" block is present AND on-topic per the gate
+  above, you MUST surface the matn passage in your response. Do not omit or
+  summarize it — quote VERBATIM with full attribution: "Safīnat al-Najā
+  (<Chapter>, al-Marbūqī tr., al-inaam.com 2009)" where <Chapter> is the baab
+  name from the FIQH MATCHED PASSAGES block. The matn is the Shafi'i school's specific
   application of higher-tier evidence (Quran/hadith); both should be presented
   side-by-side when relevant — Quran/hadith establish the principle, the matn
   shows the school's juristic framing. Do NOT synthesize a new ruling from

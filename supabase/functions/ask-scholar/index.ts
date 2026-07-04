@@ -394,6 +394,35 @@ function normalize(query: string): string[] {
   return words.filter((w) => !STOP_WORDS.has(w));
 }
 
+// --- FTS relevance floor (coverage-based) ----------------------------------
+// ts_rank is NOT a usable cross-query floor (mizan review #6489): a legit
+// "gratitude" hit (0.061) ranks below off-topic "prevent"->"prevent death"
+// noise (0.087). The FTS RPC + the per-keyword ILIKE fallback surface a passage
+// that hit a single GENERIC word while the distinctive query terms matched
+// nothing (the eyelash->3:168 "prevent death" miss). Coverage IS separable:
+// keep a hit only if the matched text carries a distinctive (non-generic) query
+// term, or >=2 query terms. Prefix match (5 chars) absorbs FTS stemming.
+const FTS_GENERIC = new Set([
+  "prevent", "prevents", "prevented", "make", "makes", "made", "making",
+  "give", "gives", "given", "giving", "take", "takes", "taken", "taking",
+  "use", "uses", "used", "using", "get", "gets", "got", "getting", "keep",
+  "keeps", "kept", "put", "puts", "come", "comes", "came", "want", "wants",
+  "wanted", "need", "needs", "needed", "help", "helps", "tell", "tells",
+  "told", "ask", "asks", "asked", "say", "says", "said", "know", "knows",
+  "known", "thing", "things", "way", "ways", "time", "times", "people",
+  "person", "find", "finds", "found", "show", "shows", "showed", "work",
+  "works", "good", "bad", "many", "much", "more", "most", "some", "between",
+]);
+
+function ftsTopical(queryWords: string[], text: string): boolean {
+  const tl = (text || "").toLowerCase();
+  const content = queryWords.filter((w) => w.length >= 3);
+  if (content.length === 0) return true;
+  const distinctive = content.filter((w) => !FTS_GENERIC.has(w));
+  if (distinctive.some((w) => tl.includes(w.slice(0, 5)))) return true;
+  return content.filter((w) => tl.includes(w.slice(0, 5))).length >= 2;
+}
+
 /** Check if the query triggers the scholar gate (fiqh detection) */
 function detectFiqh(keywords: string[], rawQuery: string): boolean {
   // Check keyword match
@@ -544,7 +573,9 @@ async function searchAyatFTS(query: string, limit = 3): Promise<AyahRow[]> {
   });
 
   if (error || !data || data.length === 0) return [];
-  return data as AyahRow[];
+  // Relevance floor: drop keyword-noise hits (#6489).
+  const qw = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return (data as AyahRow[]).filter((r) => ftsTopical(qw, r.english_translation));
 }
 
 /** ILIKE fallback search on english_translation */
@@ -560,7 +591,11 @@ async function searchAyatILike(
       .limit(limit);
 
     if (!error && data && data.length > 0) {
-      return data as AyahRow[];
+      // Relevance floor: the per-keyword ILIKE is the eyelash->"prevent death"
+      // noise source — a single generic keyword substring-matches an unrelated
+      // ayah. Keep only hits that actually cover the query (#6489).
+      const kept = (data as AyahRow[]).filter((r) => ftsTopical(keywords, r.english_translation));
+      if (kept.length > 0) return kept;
     }
   }
   return [];
@@ -590,7 +625,9 @@ async function searchTafsirFTS(
     lim: limit,
   });
   if (error || !data || data.length === 0) return [];
-  return data as TafsirFtsRow[];
+  // Relevance floor: drop keyword-noise hits (#6489).
+  const qw = query.toLowerCase().split(/\s+/).filter(Boolean);
+  return (data as TafsirFtsRow[]).filter((r) => ftsTopical(qw, r.english_text));
 }
 
 // ---------------------------------------------------------------------------
