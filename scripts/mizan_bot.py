@@ -1404,6 +1404,28 @@ def _tafsir_merge_key(row):
     return (scholar, text)
 
 
+def _resolve_ayah_ids(ayah_ids):
+    """Map ayah_id (uuid) → (surah_number, ayah_number) via ONE batched lookup.
+
+    Semantic tafsir hits carry ayah_id but not surah/ayah numbers, so a
+    semantic-ONLY hit rendered as "Surah (unknown) : Ayah ?" — un-citable, and
+    it's exactly the paraphrased/cross-lingual queries semantic uniquely catches
+    (ayat al-kursi, al-rahman) that land there. Resolving lets them be cited.
+    Read-only; returns {} on any error so the caller falls back to unknown."""
+    ids = [i for i in dict.fromkeys(ayah_ids) if i]
+    if not ids:
+        return {}
+    try:
+        rows = supabase_get("ayat", {
+            "id": f"in.({','.join(ids)})",
+            "select": "id,surah_number,ayah_number",
+        })
+        return {r["id"]: (r["surah_number"], r["ayah_number"]) for r in rows}
+    except Exception as e:
+        print(f"  ayah_id resolve failed (non-fatal): {e}")
+        return {}
+
+
 def count_mentions(word):
     """Count verses mentioning a word."""
     rows = supabase_get("ayat", {
@@ -1975,9 +1997,10 @@ def gather_context(question, meta=None):
                 print(f"  tafsir semantic failed (fallthrough to FTS): {e}")
                 tsem = {"results": []}
 
-            # Dedupe by tafsir_entry_id where present, else by (scholar,
-            # surah, ayah). FTS rows have ayah_id; semantic rows have
-            # tafsir_entry_id + ayah_id.
+            # Cross-path dedup via _tafsir_merge_key (shared scholar+text; the two
+            # paths carry disjoint ids — see that helper). Resolve semantic hits'
+            # ayah_id → surah:ayah first so a semantic-only hit is citable.
+            sem_ayah_map = _resolve_ayah_ids([r.get("ayah_id") for r in tsem["results"]])
             merged = []
             seen_keys = set()
             for src, rows in (("fts", tdata["results"]), ("sem", tsem["results"])):
@@ -1989,10 +2012,11 @@ def gather_context(question, meta=None):
                     # Normalize semantic rows to the FTS shape so downstream
                     # rendering doesn't have to branch.
                     if src == "sem":
+                        _sa = sem_ayah_map.get(r.get("ayah_id"))
                         r = {
                             "ayah_id": r.get("ayah_id"),
-                            "surah": "(unknown)",  # semantic RPC doesn't carry surah/ayah numbers
-                            "ayah": "?",
+                            "surah": _sa[0] if _sa else "(unknown)",  # resolved from ayah_id
+                            "ayah": _sa[1] if _sa else "?",
                             "arabic": r.get("arabic_text"),
                             "english_translation": None,
                             "scholar": r.get("scholar_name"),
