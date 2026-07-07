@@ -119,13 +119,23 @@ ai-scholar/
     ├── functions/
     │   ├── ask-scholar/     ← main retrieval Edge Function (Deno)
     │   ├── audit-verify/    ← third-party verification endpoint
-    │   └── _shared/         ← query-type classifier, canonical JSON, persist-ruling
-    └── migrations/
-        ├── 20260419_001_search_tafsir_fts.sql              (applied)
-        ├── 20260422_002_mizan_eval_pipeline.sql             (applied)
-        ├── 20260423_003_ruling_audit_log.sql                (applied)
-        └── 20260511_001_juridical_embeddings_per_chunk.sql  (applied)
+    │   └── _shared/         ← query-type classifier, canonical JSON, persist-ruling,
+    │                          fts-relevance (FTS floor, ported to scripts/mizan_bot.py)
+    └── migrations/          ← 18 files, monotonic _NNN per date (see `ls` for the full set)
+        ├── 20260419_001_search_tafsir_fts.sql                 (applied)
+        ├── 20260422_002_mizan_eval_pipeline.sql                (applied)
+        ├── 20260423_003_ruling_audit_log.sql                   (applied)
+        ├── … (juridical corpus, semantic substrate, user prefs, attestation role,
+        │      scholar-review flags — all applied; v0.2 substrate is live)
+        └── 20260708_001_mizan_followup_queue.sql               (BUILT, DO-NOT-APPLY —
+               MIZAN-REENGAGE-01/CAI-RESP-396; awaits independent schema review, raw PII)
 ```
+
+**Test CI:** `.github/workflows/tests.yml` runs python + node + deno suites on push/PR
+(added 2026-07-08). See `docs/TESTING.md`. Offline Python suites live in `scripts/test_*.py`;
+the two live-integration harnesses (`test_ask_scholar.py`, `test_mizan_bot_e2e.py`) are
+excluded from CI (they hit prod). Deno helpers must be extracted to `_shared/` to be
+testable (importing `ask-scholar/index.ts` boots `Deno.serve`).
 
 ## Hard invariants (load-bearing)
 
