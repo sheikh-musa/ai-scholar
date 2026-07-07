@@ -51,7 +51,8 @@ jobs:
             test_chat_state_persistence.py \
             test_evidence_fallback.py \
             test_fts_relevance_floor.py \
-            test_mizan_followup.py; do
+            test_mizan_followup.py \
+            test_tafsir_merge_dedup.py; do
             echo "::group::$t"
             python3 "$t"
             echo "::endgroup::"

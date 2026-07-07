@@ -1386,6 +1386,24 @@ def _fts_topical(words, text) -> bool:
     return sum(1 for w in content if w[:5] in tl) >= 2
 
 
+def _tafsir_merge_key(row):
+    """Cross-path dedup key for tafsir hits (FTS+semantic union).
+
+    The two paths describe the SAME tafsir_entries corpus but carry DISJOINT
+    identifiers: FTS rows have scholar/surah/ayah and no entry id; semantic rows
+    have tafsir_entry_id and no surah/ayah numbers. The earlier key
+    (tafsir_entry_id OR (scholar, surah, ayah)) therefore keyed the two paths in
+    different spaces, so the same passage surfaced by BOTH appeared TWICE — once
+    as "Surah (unknown):?" from the semantic side. Key instead on the fields both
+    paths share and pull from the same column: normalized scholar + a prefix of
+    english_text. Strictly no worse than the old key (if a snippet-vs-full
+    mismatch prevents a match, the result is the pre-fix duplicate, never an
+    over-merge of distinct passages)."""
+    scholar = str(row.get("scholar") or row.get("scholar_name") or "").strip().lower()
+    text = " ".join(str(row.get("english_text") or "").split())[:120].lower()
+    return (scholar, text)
+
+
 def count_mentions(word):
     """Count verses mentioning a word."""
     rows = supabase_get("ayat", {
@@ -1964,10 +1982,7 @@ def gather_context(question, meta=None):
             seen_keys = set()
             for src, rows in (("fts", tdata["results"]), ("sem", tsem["results"])):
                 for r in rows:
-                    eid = r.get("tafsir_entry_id")
-                    key = eid or (r.get("scholar") or r.get("scholar_name"),
-                                  r.get("surah") or r.get("ayah_id"),
-                                  r.get("ayah"))
+                    key = _tafsir_merge_key(r)
                     if key in seen_keys:
                         continue
                     seen_keys.add(key)
