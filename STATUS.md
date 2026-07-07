@@ -1,10 +1,10 @@
 # STATUS — ai-scholar
 
-Last Updated: 2026-04-29
-Phase: v0.2 retrieval-substrate sequence (system_layer L2 hybrid pgvector + FTS); pre-authored artifacts in repo, sequence pure-blocker-bound on operator/CAI dispatch
-Status: building (paused on dispatched blockers in agent_messages #972)
-Deploy URL: backend-only — `ask-scholar` Edge Function on Supabase project `tscuymavysscrvoberrr`; Telegram bots Al-Bayān + Al-Mīzān runtime per ops runbook
-Health: green on shipped substrate; yellow on v0.2 sequence (waiting on CAI dispatch since 2026-04-28T14:25 UTC, escalation ping filed msg #1023)
+Last Updated: 2026-07-08
+Phase: v0.2 hybrid-retrieval substrate SHIPPED + live; Al-Mīzān answer-quality hardening arc complete (#6489). Now operating on residual UX/quality + governance-gated re-engagement.
+Status: live — Al-Bayān (`ask-scholar` Edge Function) + Al-Mīzān bot in operator/tester use; hybrid retrieval (FTS+synonym ∪ bge-m3 semantic-rerank) serving; INV-8 nightly attestation publishing via GitHub Action.
+Deploy URL: backend-only — `ask-scholar` Edge Function on Supabase project `tscuymavysscrvoberrr`; local encoder service (bge-m3 + bge-reranker-v2-m3) on Mac Studio; Telegram bots Al-Bayān + Al-Mīzān per ops runbook.
+Health: green on shipped substrate + retrieval + audit + answer-quality fixes. Yellow only on governance-gated forward work (MIZAN-REENGAGE-01 awaiting cai; retract-gate still closed by default — never unlocked, correct posture).
 
 ## Completed (v0.1 substrate, all shipped)
 
@@ -17,114 +17,66 @@ Health: green on shipped substrate; yellow on v0.2 sequence (waiting on CAI disp
 
 ### Audit substrate (INV-8)
 - `mizan_interactions` + `mizan_auto_scores` + `mizan_human_reviews` + `mizan_eval_set` + `mizan_eval_runs` schema (migration `20260422_002`)
-- `mizan_retract_gate` singleton + `mizan_retract_block` trigger + `mizan_unlock_retract_gate` procedure (closed by default)
+- `mizan_retract_gate` singleton + `mizan_retract_block` trigger + `mizan_unlock_retract_gate` procedure (closed by default — still locked, correct)
 - Mizan judge prompt v1 (`mizan-judge-v1-2026-04-22`) with madhab-pluralism declaration
 - `ruling_audit_log` append-only hash chain + `daily_attestations` table (migration `20260423_003`)
-- Postgres-Merkle fallback substrate per `INV-8-postgres-merkle-fallback.md`
-- `audit-verify` Edge Function (third-party permissionless verification)
-- 19/19 Merkle proof round-trip integration tests passing
-
-### Producer wiring
-- `ask-scholar` writes `mizan_interactions` + `ruling_audit_log` rows on every emission path
-- Canonical-JSON serializer for content_hash stability (10/10 tests)
-- Bot adapters (`albayan_bot`, `mizan_bot`) send `telegram_id` + `bot_variant` for stable hashed identity
+- Postgres-Merkle fallback substrate per `INV-8-postgres-merkle-fallback.md`; `audit-verify` Edge Function; 19/19 Merkle round-trip tests
 
 ### Mizan judge pipeline (Phases 0-3)
-- `scripts/mizan_judge.py {batch, calibrate}` — 8-axis scoring + Pearson judge-human agreement (15/15 tests)
+- `scripts/mizan_judge.py {batch, calibrate}` — 8-axis scoring + Pearson judge-human agreement (15/15 unit tests; runs on Python 3.9 as of `ed4e911`)
 - `scripts/mizan_review.py {list, show, verdict, promote}` — human-in-loop review + Phase 3 gold-set seeding
 
-### Authored skills (per CAI-RESP-061 / CAI-RESP-073)
-- `.claude/skills/tafsir-defense-funnel/{SKILL.md,hook.md}` — F-1..F-6 + Hook #8 spec
-- `.claude/skills/4-tier-transparency/{SKILL.md,hook.md}` — T-1..T-6 + Hook #10 spec
-- `.claude/skills/inbox-check/SKILL.md` — I-1..I-5 governance discipline
-- `.claude/commands/{mizan-judge, mizan-review, audit-publish}.md` — slash workflow commands
+## Completed (v0.2 — SHIPPED since 2026-04-29, was "pre-authored/awaiting dispatch")
 
-### Operator runbook
-- `docs/OPS_AL_BAYAN_V01.md` — 8-step v0.1 launch checklist
-- `docs/INV-8-{scholar-question, postgres-merkle-fallback}.md`
-- `docs/WAQFTOOL-01-hanafi-declaration.md`
+The v0.2 sequence that STATUS previously listed as blocked-on-dispatch has largely SHIPPED, with one architectural pivot: the encoder moved from **Modal (cloud) → local Mac Studio** (MLX + `encoder_service_v2.py`), which cleared the Modal-provisioning and Modal-privacy blockers entirely (zero cloud PII surface, zero Claude quota for embeddings).
 
-## Completed (v0.2 design, pre-authored, awaiting dispatch)
+### Semantic + hybrid retrieval (the v0.2 core)
+- `20260605_001_semantic_retrieval_substrate.sql` — bge-m3 semantic substrate for hadith + tafsir + asbab (`2b4f8ac`)
+- bge-reranker-v2-m3 + hybrid scoring 0.6·rerank + 0.4·semantic (`bb35a3f`); `encoder_service_v2.py` on Mac Studio (`44dfa29`)
+- Al-Mīzān hybrid retrieval: FTS+SYNONYM ∪ semantic-rerank (`7afb032`)
+- Server-side pgvector RPC for juridical fiqh + `retrieval_config` audit stamp — CAI-RESP-220 (`8152c9f`, migrations `20260613_002/003`)
+- Recall widening + targeted retrieval-gap closes: sujūd al-sahw, radāʿah/maḥram milk-kinship, qurban-class, after-meal duʿā, combining prayers (`d0db488`, `3ac8299`, `d48322d`, `9f21b13`, `20260616_001`)
+- Coverage-based relevance floor on FTS/ILIKE noise — #6489 (`bd16cff`)
 
-### Architecture + governance docs
-- `docs/EMBED_PIPELINE_v02.md` — system_layer L2 hybrid pgvector + FTS + RRF + Opus reranker (CAI-RESP-094 + CAI-RESP-095 + AL-BAYAN-003 + LAYERING-RECONCILE applied)
-- `docs/LAYERING.md` — content_layer (primary/interpretive/juridical/connective) vs system_layer (L1-L8) glossary; gates further L-prefix filings
-- `docs/ARCH_AL_BAYAN_ENCODER_EVAL.md` — BGE-M3 vs jina-v3 90-query measurement plan (30/30/30 Arabic/Bahasa/English)
-- `docs/MODAL_PRIVACY_VERIFICATION.md` — 5-check pre-execution checklist gates Phase A backfill
-- `docs/AL_BAYAN_003_PHASE_1_RUNBOOK.md` — Safīnat al-Najā + Matn Abī Shujā' source-acquisition runbook
+### Juridical corpus ingestion (AL-BAYAN-003)
+- Ihsan-grade ingestion pipeline: schema + adapters + orchestrator (`6ce82ae`, migration `20260522_001`); idempotent provenance writes (`67f9583`)
+- Arabic→English translation path + Arabic-source embedding backfill (`be77310`), Claude-CLI-Max default, checkpoint/resume, output_tier CHECK (`7c208d2`, `7adcec7`, migrations `20260507_001/002`, `20260526_001`)
+- Source ingestion: Safīnat al-Najā (Salah baab complete), Kashifat al-Sajā Hajj baab, OpenITI adapter BOM tolerance
 
-### Migrations (committed; do-NOT-apply until upstream gates clear)
-- `20260428_005_mizan_judge_shadow.sql` — shadow-mode judge logging table (Q10 hard gate substrate)
-- `20260428_006_ayah_embeddings.sql` — pgvector(1024) + HNSW + RLS + `search_ayat_semantic` RPC
-- `20260429_001_juridical_corpus.sql` — `juridical_texts` + `ingestion_provenance` + `juridical_embeddings` + `search_juridical_semantic` RPC, multi-madhab schema from day one (AL-BAYAN-003)
+### Audit (INV-8) — now live in production
+- INV-8 forward attestation publisher: GitHub Action `attestation-publish.yml` + least-privilege role (`9f812fb`, migration `20260611_001`)
+- Attestation recovery + health check — CAI-RESP-165 R6/R7 (`6fe6d8b`); end-to-end verifier (`8f7a8b3`)
 
-### Scripts + container scaffold
-- `scripts/encoder_eval/{build_corpus, build_gold_set, embed_corpus, measure, compare}.py` — measurement harness
-- `scripts/juridical/{canonicalize, ingest_matn}.py` — matn cleanup + ingestion to `juridical_texts`
-- `modal/encoder/{Dockerfile, requirements.txt, serve.py, modal_app.py}` — model-agnostic FastAPI container (BGE-M3 / jina-v3 env switch); CAI-RESP-095 5-check privacy posture honored at config level (region=ap-southeast, container_idle_timeout=300, keep_warm=0, no request-body logging)
+### Al-Mīzān bot UX + answer-quality
+- Audience-tier inline keyboard layman/seeker/scholar (`fc3ffa5`) + last-question persistence across restart (`b2ac6f9`)
+- `/madhhab` user preference for ikhtilaf re-ranking (`cb656c7`, migration `20260603_001`); audio recitation buttons on Quranic citations (`fd919a6`); Telegram slash-command menu (`68541cf`)
+- Natural-language tafsir verse-ref → keyed lookup (`86a0e03`); honest error + auto-retry on transient CLI blips (`315c89c`)
+- **Answer-quality arc (#6489, 2026-07-05):** timeout graceful-degrade (kills the dead-end stub), ruling-classifier widening, fateha alias (`b2d746a`); real-time scholar gate now classification-driven — F-3 (`d6ba7cf`)
 
-### Strategic_decisions filings (cc-scholar-authored)
-- `AL-BAYAN-002` (id 564) — topic tags demote-to-facets + judge-consumption non-deciding-factor bound (CAI-RESP-095 (C))
-- `ARCH-AL-BAYAN-ENCODER-EVAL` (id 565) — measurement spec placeholder
-- `MIZAN-JUDGE-SHADOW-001` (id 566) — shadow logging table
+### Safety + governance
+- P1 safety: AI-draft disclaimer + high-stakes scholar routing — CAI-RESP-287 (`98188d8`)
+- Scholar-review flag button + `/review` admin export (`da16ce3`, migration `20260620_001`)
+- Classifier: biography precedes madhhab-identification (`06ca10b`); third-person obligation caught as ruling-class (`a8abd99`)
 
-## Blocked (filed to CAI msg #972, escalated msg #1023)
+### Eval seeding
+- `mizan_eval_set` seeded to 30 candidate Q+A pairs across 2 batches (`040c4c5`, `f87b066`) awaiting scholar grading toward the ≥30 N / ≥0.800 agreement retract-gate unlock threshold
 
-| # | Blocker | Owner |
+## Open / in-flight
+
+| Item | State | Owner |
 |---|---|---|
-| 1 | Apply `MIZAN-JUDGE-SHADOW-001` migration to prod (`tscuymavysscrvoberrr`) | cc-orchestrator (post-AGENTS-002 platform handoff) or Musa-direct supabase CLI |
-| 2 | Modal account provisioning + execute 5 privacy checks per `MODAL_PRIVACY_VERIFICATION.md` | account = Musa-direct (payment + ToS); execution = cc-orchestrator or CAI |
-| 3 | Phase 1 ENCODER-EVAL gold-set labeling (~90 min, 30 queries) | Musa-direct (CAI cannot label per their own LLM-rejection rule in CAI-RESP-094 Q10 (iv)) |
-| 7 | Apply `juridical_corpus` migration once AL-BAYAN-003 challenge window closes | cc-orchestrator |
-| 8 | Verify Wikisource AR canonical URLs for Safīnat + Matn Abī Shujā' (cc-scholar's WebFetch 404'd) | Musa, paired scholar (post-INV-7), or CAI direct |
+| MIZAN-REENGAGE-01 short-retention failure re-queue | SPEC shipped (`34836e8`), routed to cai (bus #7020) — build-gated on §6 ruling | cai (decision) → cc-scholar (build) |
+| Retract-gate unlock | Still CLOSED (correct) — needs ≥30 scholar-graded eval items at ≥0.800 judge-human agreement | Musa / paired scholar (grading) |
+| L7 first scholar-of-record pairing | Open question (see below) | Musa-direct |
+| asbab_nuzul provenance | 275 ishārī rows re-tagged uncertain-provenance (`3de8ffd`) — resolved, monitoring | — |
 
-cc-scholar cannot self-clear items 1-3 + 7-8. Items 4 (ENCODER-EVAL measurement), 5 (`ayah_embeddings` apply), 6 (backfill), 9 (juridical ingestion), 10-15 (shadow → audit → augment → recalibrate → unlock → cutover) all downstream.
-
-## Files Changed (recent — last 10 commits)
-
-```
-0242b52  feat+migrations(arch): pre-author Phase A-E artifacts (gated; do-not-apply)
-ed32329  docs+scripts: CAI-RESP-094/095 + AL-BAYAN-003 + LAYERING-RECONCILE follow-ups
-bd0ea3b  docs+migration(arch): ENCODER-EVAL spec + JUDGE-SHADOW migration per CAI-RESP-094 follow-ups
-d8aca86  docs(arch): EMBED_PIPELINE_v02 design draft + v4 tag-run halted
-80a7e1b  fix(hook-8): amend tafsir-defense-funnel hook spec — v0 is file-level, not same-function
-f4275d6  fix(ask-scholar): self-audit — add top-level tier per 4-tier-transparency T-2
-6f8b3cb  docs(claude): ai-scholar CLAUDE.md + 3 mizan/audit slash commands
-3b0a61c  docs(ops): Al-Bayan v0.1 operator launch runbook
-2f2a942  test(audit): Merkle proof round-trip — INV-8 math integration test (19/19 pass)
-5b31f57  feat(mizan): promote subcommand — reviewed interactions → eval_set (Phase 3)
-```
-
-## Next Up
-
-When upstream blockers clear (msg #972 dispatched):
-
-1. (post-1) Verify migration 20260428_005 applied; smoke-test `INSERT INTO mizan_judge_shadow`
-2. (post-2) Run Modal privacy verification, fill TBD result section in `MODAL_PRIVACY_VERIFICATION.md`
-3. (post-3) Once gold-set labeled, run ENCODER-EVAL measurement (BGE-M3 vs jina-v3)
-4. Apply `ayah_embeddings` migration (post 2 + 3)
-5. Backfill 6,236 ayat embeddings via Modal `/embed`
-6. Apply `juridical_corpus` migration (post AL-BAYAN-003 window close)
-7. Phase 1 source acquisition (operator-verified URLs)
-8. Juridical ingestion (canonicalize + ingest_matn)
-9. Wire fused retrieval into `ask-scholar/index.ts` in shadow-mode (logs to `mizan_judge_shadow`, returns existing FTS-only)
-10. 1-2 week shadow accumulation
-11. Diff audit + augmented gold-set (50-200 items per AL-BAYAN-003 extension)
-12. Recalibrate retract threshold
-13. Unlock retract-gate
-14. Cutover Quran retrieval to fused (primary user-serving)
-15. Activate juridical retrieval (separate gate per AL-BAYAN-003)
-
-## Conformance debt (per CAI-RESP-097 GAP 4)
-
-This STATUS.md uses dookana-style canonical pattern as interim. Conform to `STATUS-CANONICAL-001` template within 30 days of that template shipping.
+## Known corpus/provenance notes
+- asbab_nuzul source-tag corruption diagnosed + resolved (`f1e56b9`, `3de8ffd`): 275 rows re-tagged uncertain-provenance rather than asserting a false isnād.
+- Corpus gaps remain phrasing-sensitive on some queries (e.g. tasawwuf absent; wudu-hadith under-retrieval) — handled honestly ("corpus doesn't carry this") rather than fabricated, per funnel F-4.
 
 ## Questions for CTO
-
-- L7 first scholar pairing: who? for which ruling category first? (Easier-to-bound categories first per my prior framing — salah times / permissible income types / qurban eligibility.) This is the only thing I cannot push to CAI per their advisory-to-Musa-direct routing on this item.
-- Modal account: confirm whether you'll provision personally or delegate to cc-orchestrator? Workspace name reservation pattern?
-- ENCODER-EVAL gold-set labeling timing: 90 min Phase 1 — can you slot a calendar block, or want me to dispatch via CAI to a paired scholar once L7 lands?
+- L7 first scholar pairing: who, and which ruling category first? (Easier-to-bound first: salah times / permissible income / qurban eligibility.) Only item that cannot route through cai per their advisory-to-Musa-direct rule.
+- Scholar grading of the 30-item eval set: needed to move toward the retract-gate unlock threshold — can a paired scholar slot the grading pass?
 
 ## Provenance
-
-This STATUS.md authored 2026-04-29 per `agent_messages msg #962` (CAI-RESP-097 GAP 4 routing to cc-scholar) using dookana-style interim per CAI guidance.
+STATUS.md refreshed 2026-07-08 by cc-scholar from commit evidence (`git log --since=2026-04-29`), during the donated-cap backlog-drain session. Supersedes the 2026-04-29 dookana-style snapshot, whose "Blocked on Modal/dispatch" section is obsolete (encoder pivoted to local Mac Studio; v0.2 substrate shipped).
