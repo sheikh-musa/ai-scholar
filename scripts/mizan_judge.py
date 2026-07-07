@@ -25,6 +25,8 @@ Design:
     scholar_grade. Threshold 0.800 matches mizan_retract_gate default.
 """
 
+from __future__ import annotations
+
 import json
 import math
 import os

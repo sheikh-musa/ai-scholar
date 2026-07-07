@@ -29,6 +29,8 @@ Subcommands:
 Design: urllib + supabase REST, matching existing ai-scholar scripts pattern.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys
