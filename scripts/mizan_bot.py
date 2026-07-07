@@ -2257,6 +2257,23 @@ def _lean_prompt(question, context, max_ctx=8000) -> str:
     )
 
 
+# The two CAI-RESP-396-eligible failure-answer strings, named so the
+# MIZAN-REENGAGE-01 follow-up classifier (scripts/mizan_followup.py) has a single
+# source of truth for "was this a genuine failure worth re-queuing?" — see
+# classify_failure(). EVIDENCE_FALLBACK_PREFIX = degraded-but-real evidence
+# answer; TIMEOUT_STUB_MSG = the honest no-parseable-evidence stub. A normal,
+# send-worthy answer matches NEITHER (G1: no follow-up row for a good answer).
+TIMEOUT_STUB_MSG = (
+    "That one's taking longer than I can hold the line for right now. "
+    "Please send it again in a moment, inshaAllah — it usually goes "
+    "through on a second try. 🌿"
+)
+EVIDENCE_FALLBACK_PREFIX = (
+    "⏳ The full write-up is taking longer than usual, so here is the "
+    "sourced evidence directly — ask again for a fuller explanation."
+)
+
+
 def _evidence_fallback(question, context) -> str:
     """Last-resort answer built from the retrieval that ALREADY succeeded, with
     NO LLM call — used only when both the full and the trimmed synthesis time out.
@@ -2326,12 +2343,9 @@ def _evidence_fallback(question, context) -> str:
 
     if not parts:
         # No parseable evidence (rare) — honest, not a dead-end loop-back.
-        return ("That one's taking longer than I can hold the line for right now. "
-                "Please send it again in a moment, inshaAllah — it usually goes "
-                "through on a second try. 🌿")
+        return TIMEOUT_STUB_MSG
 
-    return ("⏳ The full write-up is taking longer than usual, so here is the "
-            "sourced evidence directly — ask again for a fuller explanation.\n\n"
+    return (EVIDENCE_FALLBACK_PREFIX + "\n\n"
             + "\n\n".join(parts[:6])
             + "\n\n_Sourced from the retrieved corpus; this is evidence, not a ruling — "
             "for a fiqh verdict consult a qualified scholar._")
@@ -3137,6 +3151,21 @@ def main():
 
                 print(f"[{user}] {text}")
 
+                # MIZAN-REENGAGE-01 (CAI-RESP-396 §6b): a bare "STOP" reply opts the
+                # user out of ALL future follow-ups, permanently + hash-keyed. INERT
+                # until MIZAN_FOLLOWUP_ENABLED=1 (and the migration is applied). Kept
+                # conservative (only a short bare opt-out phrase; "stop combining
+                # prayers?" is still a real question). Fail-soft.
+                try:
+                    import mizan_followup as _followup
+                    if _followup.FOLLOWUP_ENABLED and _followup.is_stop_reply(text):
+                        _followup.add_optout(chat_id, source="stop-reply")
+                        send_message(chat_id, "Understood — we won't send any follow-ups. "
+                                              "You can still ask me anything anytime. 🌿")
+                        continue
+                except Exception as _se:
+                    print(f"  -> stop-optout check skipped ({type(_se).__name__})")
+
                 # Get or create session
                 session = get_session(chat_id)
 
@@ -3449,6 +3478,20 @@ def main():
                     # #2746: add the scholar-review flag button now that we have
                     # the interaction_id (persist runs after send per RESP-135).
                     _maybe_add_flag_button(chat_id, msg_id, session["answer_level"], cited, persist_result)
+
+                    # MIZAN-REENGAGE-01 (CAI-RESP-396): if THIS answer was a genuine
+                    # failure (timeout-stub / evidence-fallback), queue ONE courteous
+                    # follow-up for when the pipeline can answer it well. INERT until
+                    # migration 20260708_001 is applied AND MIZAN_FOLLOWUP_ENABLED=1 —
+                    # enqueue_if_eligible() no-ops before any DB write otherwise, and a
+                    # send-worthy answer classifies as no-op (G1). Fail-soft: a follow-up
+                    # bookkeeping problem must never break the user's reply.
+                    try:
+                        import mizan_followup as _followup
+                        _iid = persist_result.get("interaction_id") if isinstance(persist_result, dict) else None
+                        _followup.enqueue_if_eligible(chat_id, text, answer, interaction_id=_iid)
+                    except Exception as _fe:
+                        print(f"  -> followup enqueue skipped ({type(_fe).__name__})")
                 except Exception as msg_err:
                     # Per-message exception handler — don't leave user hanging.
                     err_short = type(msg_err).__name__

@@ -50,7 +50,8 @@ jobs:
             test_tafsir_verse_routing.py \
             test_chat_state_persistence.py \
             test_evidence_fallback.py \
-            test_fts_relevance_floor.py; do
+            test_fts_relevance_floor.py \
+            test_mizan_followup.py; do
             echo "::group::$t"
             python3 "$t"
             echo "::endgroup::"

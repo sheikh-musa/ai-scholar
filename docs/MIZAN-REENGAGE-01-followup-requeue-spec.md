@@ -1,6 +1,6 @@
 # MIZAN-REENGAGE-01 — Short-retention failure re-queue (DESIGN SPEC — for cai review)
 
-**Status:** SPEC ONLY. Nothing ships until cai reviews. No table created, no code written, no cron scheduled. This document is the design surface for that review.
+**Status:** APPROVED (CAI-RESP-396, Option C, tighter bounds) — BUILT, apply-gated. Migration + code + tests committed; nothing applied or activated. Awaiting the independent schema review CAI-RESP-396 requires (raw PII) before apply. See §8 for the ruling + build.
 **Author:** cc-scholar · **Requested by:** operator via cc-orchestrator (bus #6519 → approval to spec) · **Date:** 2026-07-05
 **Origin:** mizan answer-quality arc (#6489). Operator ask (verbatim): *"is it possible to reach out to those whose questions were unanswered previously to give a better answer? i dont want their bad experience to deter them from using the bot."*
 
@@ -80,3 +80,28 @@ One follow-up per user per failure-window (e.g., collapse multiple failures in a
 
 ## 7. What this spec deliberately does NOT do
 No implementation, no migration, no cron. No change to `mizan_interactions`, the retract-gate, or the funnel. Historical-user recovery is out of scope (infeasible). Ships only after cai rules on §6.
+
+---
+
+## 8. CAI-RESP-396 ruling + build (2026-07-08)
+
+cai **RULED CAI-RESP-396**: Option C APPROVED, to tighter bounds than §4. Build permitted; **apply gated** — the migration + purge job + opt-out path return for an *independent schema review* (raw PII) before apply. The build below encodes the ruling.
+
+**§6 answers (binding):**
+1. Retention — YES, Option C (raw id is user-given + purpose-bound; durable store stays hash-only). Option A leaves a real da'wah harm.
+2. **TTL = 24h** (backstop ceiling only) — purge `chat_id` at TERMINAL state (sent/skipped) *immediately*.
+3. **Classes = timeout-stub + evidence-fallback ONLY.** `weak-corpus-gap` EXCLUDED at enqueue — re-running the same corpus yields the same honest non-answer; re-queuing risks manufacturing a confident religious claim the evidence doesn't carry. Honest "we don't have this" is correct.
+4. **Gate = full `mizan_judge`** (not heuristic), same send-worthy bar as a first answer, **bias to SKIP** on any doubt; ruling-class still through F-3 + INV-6.
+5. **Cooldown = one follow-up / user / 30 days**; collapse in-window failures to one message.
+6. Consent — no opt-IN gate (their own question), but MANDATORY: (a) honest self-identifying message, never marketing; (b) one-line STOP opt-out; (c) opt-outs stored **hash-keyed** (permanent suppression, no raw PII).
+7. Forward-only confirmed — do NOT weaken the hash to chase the 2 historical users.
+
+**Added guardrails:** G1 enqueue ONLY on genuine failure; G2 VERIFIABLE purge (audit count per run); G3 no raw `chat_id` in logs/telemetry; G4 RLS service-role-only deny-all.
+
+**Build (committed, apply-gated):**
+- `supabase/migrations/20260708_001_mizan_followup_queue.sql` — `mizan_followup_queue` (+ `failure_class` CHECK = the 2 eligible classes; 24h `expires_at`), `mizan_followup_optout` (hash-keyed), a BEFORE-UPDATE trigger that nulls `chat_id`+`reanswer_text` at terminal (§2, DB-enforced), `purge_mizan_followup_queue()` returning `(purged_count, oldest_surviving_chat_id_age)` (G2), RLS deny-all + explicit service-role policy (G4). **DO-NOT-APPLY until schema review.**
+- `scripts/mizan_followup.py` — enqueue / drain / purge / opt-out. **Activation-gated:** `enqueue_if_eligible()` no-ops unless `MIZAN_FOLLOWUP_ENABLED=1` *and* returns before any DB write for a send-worthy answer (G1). Drain runs the fixed pipeline → `mizan_judge` send-worthy gate (bias-to-skip) → send one follow-up or skip. Raw `chat_id` used only at send; never logged (G3).
+- `scripts/mizan_bot.py` — the enqueue hook wired at the post-persist emit point + a STOP-reply opt-out handler, **both inert** until the flag is set (fail-soft; a follow-up problem never breaks the reply path). `EVIDENCE_FALLBACK_PREFIX` / `TIMEOUT_STUB_MSG` named as the single source of truth for failure classification.
+- `scripts/test_mizan_followup.py` — 21 offline cases (classification, cooldown boundary, send-worthy bias-to-skip, STOP detection, message shape, and the safety property that the disabled feature is fully inert). Wired into test CI.
+
+**Activation checklist (post schema review):** (1) apply `20260708_001`; (2) schedule `mizan_followup.py purge` (watch the G2 age); (3) set `MIZAN_FOLLOWUP_ENABLED=1`; (4) drive one real failed→re-answered→sent round-trip with evidence; (5) confirm STOP suppresses. Nothing user-facing until purge + opt-out are demonstrably working (cai's condition).
