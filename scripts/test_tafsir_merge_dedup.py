@@ -2,13 +2,20 @@
 """Unit tests for mizan_bot._tafsir_merge_key — cross-path dedup of the
 FTS+semantic tafsir union.
 
-Regression guard for the disjoint-key bug fixed 2026-07-08: the FTS and
-semantic tafsir paths return the SAME corpus with DISJOINT identifiers (FTS:
-scholar/surah/ayah, no entry id; semantic: tafsir_entry_id, no surah/ayah), so
-the old key (tafsir_entry_id OR (scholar, surah, ayah)) keyed them in different
-spaces and the same passage surfaced by both paths appeared TWICE in context —
-once degraded as "Surah (unknown):?". The key now uses the fields both paths
-share (normalized scholar + english_text prefix).
+Regression guard for two bugs found 2026-07-08:
+  1. Disjoint-key bug: FTS and semantic tafsir paths return the SAME corpus with
+     DISJOINT identifiers (FTS: scholar/surah/ayah, no entry id; semantic:
+     tafsir_entry_id, no surah/ayah), so keying them separately meant the same
+     passage from both paths appeared twice (once as "Surah (unknown):?").
+  2. Over-merge risk (surfaced by an end-to-end smoke sweep): an intermediate
+     english_text-prefix key would collapse two DIFFERENT ayat that share a
+     scholar's boilerplate opening (e.g. Ibn Kathir's "…which was revealed in
+     Makkah…").
+
+The key is now the natural unique key (scholar, surah, ayah) — the corpus has
+exactly one tafsir row per (ayah_id, scholar), and semantic ayah_id is resolved
+to surah:ayah before the merge so both paths share coords. It falls back to
+scholar+text-prefix only when coords are unavailable.
 
 Pure offline. Run:  python3 scripts/test_tafsir_merge_dedup.py
 """
@@ -25,62 +32,59 @@ sys.path.insert(0, str(Path(__file__).parent))
 import mizan_bot as mb  # noqa: E402
 
 key = mb._tafsir_merge_key
-
-PASSAGE = ("The Throne Verse establishes Allah's absolute sovereignty over the "
-           "heavens and the earth, His eternal life and self-subsistence...")
-
-# FTS-shaped row (search_tafsir): scholar/surah/ayah, no tafsir_entry_id.
-FTS = {"scholar": "Ibn Kathir", "surah": 2, "ayah": 255, "english_text": PASSAGE}
-# Semantic-shaped row (tafsir_semantic): tafsir_entry_id/scholar_name, no numbers.
-SEM = {"scholar_name": "Ibn Kathir", "tafsir_entry_id": "uuid-abc",
-       "ayah_id": "uuid-xyz", "english_text": PASSAGE}
+PASSAGE = "The Throne Verse establishes Allah's absolute sovereignty over the heavens..."
 
 
 def test_same_passage_across_paths_collides():
-    # The whole point: FTS and semantic hits of the same passage dedup to one.
-    assert key(FTS) == key(SEM)
+    # FTS carries (scholar, surah, ayah); semantic's ayah_id is resolved to the
+    # same (surah, ayah) before the key is computed — so both key identically.
+    assert key("Ibn Kathir", 2, 255, PASSAGE) == key("ibn kathir", 2, 255, "different snippet text")
 
 
-def test_different_passage_distinct():
-    other = {"scholar_name": "Ibn Kathir",
-             "english_text": "On the prohibition of riba and its consequences..."}
-    assert key(FTS) != key(other)
+def test_different_ayah_distinct():
+    assert key("Ibn Kathir", 2, 255, PASSAGE) != key("Ibn Kathir", 2, 256, PASSAGE)
 
 
-def test_same_text_different_scholar_kept():
-    # Two scholars' commentary on the same ayah are distinct hits — must NOT merge.
-    saadi = {"scholar": "Al-Sa'di", "english_text": PASSAGE}
-    assert key(FTS) != key(saadi)
+def test_same_ayah_different_scholar_kept():
+    assert key("Ibn Kathir", 2, 255, PASSAGE) != key("Al-Sa'di", 2, 255, PASSAGE)
 
 
-def test_scholar_field_name_normalized():
-    # 'scholar' (FTS) and 'scholar_name' (semantic) are treated as the same field.
-    assert key({"scholar": "Ibn Kathir", "english_text": PASSAGE}) == \
-           key({"scholar_name": "ibn kathir", "english_text": PASSAGE})
+def test_boilerplate_prefix_does_not_over_merge():
+    # THE over-merge guard: two DIFFERENT ayat whose tafsir shares a long
+    # boilerplate opening must stay distinct (a text-prefix key would collapse them).
+    boiler = "Which was revealed in Makkah and it is a Makki surah consisting of several verses that..."
+    assert key("Ibn Kathir", 106, 2, boiler) != key("Ibn Kathir", 50, 4, boiler)
 
 
-def test_whitespace_normalized():
-    a = {"scholar": "X", "english_text": "the  throne   verse\nestablishes"}
-    b = {"scholar": "X", "english_text": "the throne verse establishes"}
-    assert key(a) == key(b)
+def test_coord_fallback_to_text_when_unresolved():
+    # When ayah coords are unavailable (ayah_id resolution failed), fall back to
+    # scholar + text prefix so within-path dedup still works.
+    k = key("Ibn Kathir", None, None, PASSAGE)
+    assert k == ("ibn kathir", " ".join(PASSAGE.split())[:120].lower())
+    # same unresolved passage dedups; a different one does not
+    assert key("Ibn Kathir", None, None, PASSAGE) == key("Ibn Kathir", None, None, PASSAGE)
+    assert key("Ibn Kathir", None, None, PASSAGE) != key("Ibn Kathir", None, None, "On riba and its consequences...")
 
 
-def test_missing_fields_safe():
-    assert key({}) == ("", "")
-    assert key({"scholar": "X"}) == ("x", "")
+def test_missing_scholar_safe():
+    assert key(None, 1, 1, "") == ("", "1", "1")
 
 
 def test_dedup_over_a_mixed_list():
-    # Simulate the merge loop's dedup and assert the duplicate collapses.
-    rows = [FTS, SEM, {"scholar": "Al-Sa'di", "english_text": PASSAGE}]
+    # FTS hit + semantic hit (already resolved to same coords) + a distinct scholar.
+    items = [
+        ("Ibn Kathir", 2, 255, PASSAGE),        # fts
+        ("Ibn Kathir", 2, 255, "snippet form"),  # sem, same ayah -> dedup
+        ("Al-Sa'di", 2, 255, PASSAGE),           # distinct scholar -> kept
+    ]
     seen, merged = set(), []
-    for r in rows:
-        k = key(r)
+    for args in items:
+        k = key(*args)
         if k in seen:
             continue
         seen.add(k)
-        merged.append(r)
-    assert len(merged) == 2  # Ibn Kathir (deduped across paths) + Al-Sa'di
+        merged.append(args)
+    assert len(merged) == 2
 
 
 def _run():

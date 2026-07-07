@@ -1386,22 +1386,28 @@ def _fts_topical(words, text) -> bool:
     return sum(1 for w in content if w[:5] in tl) >= 2
 
 
-def _tafsir_merge_key(row):
+def _tafsir_merge_key(scholar, surah, ayah, text=""):
     """Cross-path dedup key for tafsir hits (FTS+semantic union).
 
     The two paths describe the SAME tafsir_entries corpus but carry DISJOINT
     identifiers: FTS rows have scholar/surah/ayah and no entry id; semantic rows
-    have tafsir_entry_id and no surah/ayah numbers. The earlier key
-    (tafsir_entry_id OR (scholar, surah, ayah)) therefore keyed the two paths in
-    different spaces, so the same passage surfaced by BOTH appeared TWICE — once
-    as "Surah (unknown):?" from the semantic side. Key instead on the fields both
-    paths share and pull from the same column: normalized scholar + a prefix of
-    english_text. Strictly no worse than the old key (if a snippet-vs-full
-    mismatch prevents a match, the result is the pre-fix duplicate, never an
-    over-merge of distinct passages)."""
-    scholar = str(row.get("scholar") or row.get("scholar_name") or "").strip().lower()
-    text = " ".join(str(row.get("english_text") or "").split())[:120].lower()
-    return (scholar, text)
+    have tafsir_entry_id + ayah_id and no surah/ayah numbers. The original key
+    (tafsir_entry_id OR (scholar, surah, ayah)) keyed the two paths in different
+    spaces, so the same passage surfaced by BOTH appeared TWICE (once as "Surah
+    (unknown):?" from the semantic side).
+
+    The natural unique key is (scholar, surah, ayah) — the corpus has exactly one
+    tafsir_entries row per (ayah_id, scholar) — and now that semantic ayah_id is
+    resolved to surah:ayah before the merge (see _resolve_ayah_ids), BOTH paths
+    can use it. This dedups the same passage across paths AND never over-merges
+    distinct passages (an english_text-prefix key would have wrongly collapsed two
+    different ayat that share a scholar's boilerplate opening, e.g. Ibn Kathir's
+    "…which was revealed in Makkah…"). Falls back to scholar+text-prefix only when
+    the ayah coords are unavailable (rare: ayah_id resolution failed)."""
+    scholar = str(scholar or "").strip().lower()
+    if surah is not None and ayah is not None:
+        return (scholar, str(surah), str(ayah))
+    return (scholar, " ".join(str(text or "").split())[:120].lower())
 
 
 def _resolve_ayah_ids(ayah_ids):
@@ -1997,29 +2003,35 @@ def gather_context(question, meta=None):
                 print(f"  tafsir semantic failed (fallthrough to FTS): {e}")
                 tsem = {"results": []}
 
-            # Cross-path dedup via _tafsir_merge_key (shared scholar+text; the two
-            # paths carry disjoint ids — see that helper). Resolve semantic hits'
-            # ayah_id → surah:ayah first so a semantic-only hit is citable.
+            # Cross-path dedup on the natural key (scholar, surah, ayah). Resolve
+            # semantic hits' ayah_id → surah:ayah FIRST so both paths share coords
+            # (that both dedups across paths and makes semantic hits citable).
             sem_ayah_map = _resolve_ayah_ids([r.get("ayah_id") for r in tsem["results"]])
             merged = []
             seen_keys = set()
             for src, rows in (("fts", tdata["results"]), ("sem", tsem["results"])):
                 for r in rows:
-                    key = _tafsir_merge_key(r)
+                    if src == "sem":
+                        _sa = sem_ayah_map.get(r.get("ayah_id"))
+                        surah, ayah = (_sa if _sa else (None, None))
+                        scholar = r.get("scholar_name")
+                    else:
+                        surah, ayah = r.get("surah"), r.get("ayah")
+                        scholar = r.get("scholar")
+                    key = _tafsir_merge_key(scholar, surah, ayah, r.get("english_text"))
                     if key in seen_keys:
                         continue
                     seen_keys.add(key)
                     # Normalize semantic rows to the FTS shape so downstream
                     # rendering doesn't have to branch.
                     if src == "sem":
-                        _sa = sem_ayah_map.get(r.get("ayah_id"))
                         r = {
                             "ayah_id": r.get("ayah_id"),
-                            "surah": _sa[0] if _sa else "(unknown)",  # resolved from ayah_id
-                            "ayah": _sa[1] if _sa else "?",
+                            "surah": surah if surah is not None else "(unknown)",
+                            "ayah": ayah if ayah is not None else "?",
                             "arabic": r.get("arabic_text"),
                             "english_translation": None,
-                            "scholar": r.get("scholar_name"),
+                            "scholar": scholar,
                             "source": r.get("source_work"),
                             "english_text": r.get("english_text", ""),
                             "tier": r.get("output_tier"),
