@@ -1,0 +1,77 @@
+# Test CI — runs the offline test suites on every push / PR.
+#
+# Fills a real gap: before this, the only workflow was the INV-8 attestation
+# cron, so nothing ran the unit suites automatically and the Deno tests only
+# ran by hand (deno isn't installed on the dev box). This makes "merge what's
+# green" mean something.
+#
+# Scope: NO secrets, NO external push, read-only. Runs only the offline-safe
+# tests. The two live-integration harnesses (test_ask_scholar.py — hits the
+# live ask-scholar Edge Function; test_mizan_bot_e2e.py — hits the prod DB +
+# Claude CLI) are intentionally excluded; they need live creds and would write
+# real audit rows, which must not happen in CI.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install offline test deps
+        run: python -m pip install --quiet requests python-dotenv
+      - name: Run offline-safe Python tests
+        working-directory: scripts
+        run: |
+          set -e
+          for t in \
+            test_mizan_judge.py \
+            test_cli_failure_classification.py \
+            test_safety_classes.py \
+            test_scholar_review_flag.py \
+            test_tafsir_verse_routing.py \
+            test_chat_state_persistence.py; do
+            echo "::group::$t"
+            python3 "$t"
+            echo "::endgroup::"
+          done
+
+  node:
+    name: Node audit tests (Merkle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Run Merkle round-trip test harness
+        run: node --test scripts/audit/__tests__/merkle.test.mjs
+
+  deno:
+    name: Deno Edge Function tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Run _shared + persist-mizan-ruling test suites
+        run: deno test --allow-all supabase/functions/
