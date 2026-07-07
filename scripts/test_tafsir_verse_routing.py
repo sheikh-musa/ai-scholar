@@ -50,6 +50,16 @@ check("'Surah 94 ayah 7 and 8' -> ayat [7,8]",
 check("'al insyirah' alias -> surah 94", resolve_surah("tafsir of last 2 ayat of al insyirah") == 94)
 check("'al-inshirah' (2nd name) alias -> surah 94", resolve_surah("tafsir of al-inshirah") == 94)
 check("'insyirah' (Malay spelling) alias -> surah 94", resolve_surah("insyirah") == 94)
+
+# --- Al-Fatihah 'e'-vowel spellings (#6489: "What does al fateha mean?" was a
+#     live retrieval miss — only the 'i'-vowel aliases existed). The most-recited
+#     surah must resolve robustly across common transliterations. ---
+check("'al fateha' alias -> surah 1", resolve_surah("what does al fateha mean") == 1)
+check("'fateha' alias -> surah 1", resolve_surah("tafsir of fateha") == 1)
+check("'fatehah' alias -> surah 1", resolve_surah("fatehah") == 1)
+check("'al-fateha' hyphen alias -> surah 1", resolve_surah("al-fateha") == 1)
+check("'fatihatul kitab' alias -> surah 1", resolve_surah("fatihatul kitab") == 1)
+check("'al fatihah' ('i'-vowel) still -> surah 1", resolve_surah("al fatihah") == 1)
 # 'last 2 ayat' needs DB for surah length; only assert it's a 2-element tail if DB reachable.
 try:
     last2 = mb.extract_ayah_numbers("tafsir of last 2 ayat of al insyirah", 94)
