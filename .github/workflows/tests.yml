@@ -49,7 +49,8 @@ jobs:
             test_scholar_review_flag.py \
             test_tafsir_verse_routing.py \
             test_chat_state_persistence.py \
-            test_evidence_fallback.py; do
+            test_evidence_fallback.py \
+            test_fts_relevance_floor.py; do
             echo "::group::$t"
             python3 "$t"
             echo "::endgroup::"

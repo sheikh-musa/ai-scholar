@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { classifyQueryType, type QueryType } from "../_shared/query-type-classifier.ts";
+import { ftsTopical } from "../_shared/fts-relevance.ts";
 import {
   persistRulingEmission,
   type PersistRulingFields,
@@ -394,34 +395,10 @@ function normalize(query: string): string[] {
   return words.filter((w) => !STOP_WORDS.has(w));
 }
 
-// --- FTS relevance floor (coverage-based) ----------------------------------
-// ts_rank is NOT a usable cross-query floor (mizan review #6489): a legit
-// "gratitude" hit (0.061) ranks below off-topic "prevent"->"prevent death"
-// noise (0.087). The FTS RPC + the per-keyword ILIKE fallback surface a passage
-// that hit a single GENERIC word while the distinctive query terms matched
-// nothing (the eyelash->3:168 "prevent death" miss). Coverage IS separable:
-// keep a hit only if the matched text carries a distinctive (non-generic) query
-// term, or >=2 query terms. Prefix match (5 chars) absorbs FTS stemming.
-const FTS_GENERIC = new Set([
-  "prevent", "prevents", "prevented", "make", "makes", "made", "making",
-  "give", "gives", "given", "giving", "take", "takes", "taken", "taking",
-  "use", "uses", "used", "using", "get", "gets", "got", "getting", "keep",
-  "keeps", "kept", "put", "puts", "come", "comes", "came", "want", "wants",
-  "wanted", "need", "needs", "needed", "help", "helps", "tell", "tells",
-  "told", "ask", "asks", "asked", "say", "says", "said", "know", "knows",
-  "known", "thing", "things", "way", "ways", "time", "times", "people",
-  "person", "find", "finds", "found", "show", "shows", "showed", "work",
-  "works", "good", "bad", "many", "much", "more", "most", "some", "between",
-]);
-
-function ftsTopical(queryWords: string[], text: string): boolean {
-  const tl = (text || "").toLowerCase();
-  const content = queryWords.filter((w) => w.length >= 3);
-  if (content.length === 0) return true;
-  const distinctive = content.filter((w) => !FTS_GENERIC.has(w));
-  if (distinctive.some((w) => tl.includes(w.slice(0, 5)))) return true;
-  return content.filter((w) => tl.includes(w.slice(0, 5))).length >= 2;
-}
+// FTS relevance floor (coverage-based, #6489) — extracted to _shared so it is
+// unit-testable without importing this file (which starts Deno.serve).
+// See ../_shared/fts-relevance.ts; kept in lockstep with the Python port in
+// scripts/mizan_bot.py (_fts_topical).
 
 /** Check if the query triggers the scholar gate (fiqh detection) */
 function detectFiqh(keywords: string[], rawQuery: string): boolean {
