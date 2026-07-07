@@ -48,7 +48,8 @@ jobs:
             test_safety_classes.py \
             test_scholar_review_flag.py \
             test_tafsir_verse_routing.py \
-            test_chat_state_persistence.py; do
+            test_chat_state_persistence.py \
+            test_evidence_fallback.py; do
             echo "::group::$t"
             python3 "$t"
             echo "::endgroup::"

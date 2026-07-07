@@ -2270,6 +2270,13 @@ def _evidence_fallback(question, context) -> str:
         s = " ".join(str(s or "").split())
         return s if len(s) <= n else s[:n].rstrip() + "…"
 
+    def _first(d, *keys):
+        for k in keys:
+            v = d.get(k)
+            if v:
+                return v
+        return None
+
     parts = []
     for block in (context or "").split("\n\n---\n\n"):
         block = block.strip()
@@ -2281,15 +2288,31 @@ def _evidence_fallback(question, context) -> str:
             data = json.loads(body)
         except Exception:
             continue
-        items = data if isinstance(data, list) else [data]
+        # Unwrap {"results": [...]} envelopes so search blocks (QURAN SEARCH /
+        # TOPIC / TAFSIR search) surface their rows too — not just direct verse
+        # lookups. Without this the dominant timeout class (heavy retrieval
+        # context, all results-wrapped) fell through to the generic stub, and
+        # search rows use *_number / arabic_text / english_translation keys that
+        # the ayah branch below didn't recognise (#6489 fallback gap).
+        if isinstance(data, dict) and isinstance(data.get("results"), list):
+            items = data["results"]
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = [data]
         for it in items:
             if not isinstance(it, dict):
                 continue
-            if it.get("arabic") and it.get("translation"):
-                name = it.get("surah_name") or f"Surah {it.get('surah')}"
-                seg = [f"📖 *{name} {it.get('surah')}:{it.get('ayah')}*",
-                       f"> {_clip(it['arabic'], 500)}",
-                       f"_{_clip(it['translation'], 500)}_"]
+            arabic = _first(it, "arabic", "arabic_text")
+            translation = _first(it, "translation", "english_translation")
+            if arabic and translation:
+                surah = _first(it, "surah", "surah_number")
+                ayah = _first(it, "ayah", "ayah_number")
+                name = it.get("surah_name") or (f"Surah {surah}" if surah else "Qur'an")
+                ref = f" {surah}:{ayah}" if surah and ayah else ""
+                seg = [f"📖 *{name}{ref}*",
+                       f"> {_clip(arabic, 500)}",
+                       f"_{_clip(translation, 500)}_"]
                 for t in (it.get("tafsir") or [])[:1]:
                     seg.append(f"📝 {_clip(t.get('scholar_name'), 40)}: {_clip(t.get('english_text'), 600)}")
                 parts.append("\n".join(seg))
