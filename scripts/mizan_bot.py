@@ -2873,6 +2873,59 @@ def tg_request(method, data=None):
     return body
 
 
+# --- Hardened long-poll getUpdates (op#5959 — Bayan poll-loop outage) --------
+# Root cause of the silent outage: a getUpdates long-poll would latch a
+# black-holed TLS connection (TCP ESTABLISHED to api.telegram.org, handshake
+# stalled mid-flight) and the urlopen socket timeout did NOT fire — the loop
+# wedged for minutes with no log line, no 409 (Telegram never saw the request),
+# and no retry. Two defences here, independent of urllib's unreliable timeout:
+#   1. A SIGALRM wall-clock backstop that interrupts the C-level poll() and
+#      raises, so no single getUpdates can ever exceed the deadline. SIGALRM is
+#      safe: the poll loop runs on the main thread. The handler RAISES so PEP-475
+#      does not silently retry the interrupted syscall.
+#   2. Per-attempt logging (start / return-count / exception) so any future
+#      stall is visible in logs/mizan_bot.log instead of being silent.
+# Each call is a fresh urlopen (no connection reuse), so a retry after a stall
+# always dials a new connection rather than re-waiting on the dead one.
+class _PollTimeout(Exception):
+    pass
+
+
+def _poll_alarm_handler(signum, frame):
+    raise _PollTimeout("getUpdates hard deadline exceeded")
+
+
+def poll_get_updates(offset, long_poll=25):
+    """One long-poll getUpdates with a hard SIGALRM backstop + logging.
+
+    long_poll is the Telegram-side wait (seconds). The SIGALRM backstop fires at
+    long_poll + 20s, well past a healthy response but bounding a black-holed
+    connection. Returns the parsed body dict; raises on timeout/network error so
+    the caller's except path logs + retries with a fresh connection.
+    """
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    deadline = long_poll + 20
+    prev = signal.signal(signal.SIGALRM, _poll_alarm_handler)
+    signal.alarm(deadline)
+    try:
+        body = tg_request("getUpdates", {
+            "offset": offset,
+            "timeout": long_poll,
+            "allowed_updates": ["message", "callback_query"],
+        })
+        n = len(body.get("result", [])) if isinstance(body, dict) else 0
+        if n:
+            print(f"[{ts}] getUpdates -> {n} update(s)")
+        return body
+    except _PollTimeout:
+        print(f"[{ts}] getUpdates HARD-TIMEOUT after {deadline}s "
+              f"(black-holed connection) — dropping it, reconnecting")
+        raise
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prev)
+
+
 def _split_for_telegram(text: str, max_chars: int = 4000) -> list[str]:
     """Split long responses on natural boundaries instead of hard-cutting at 4000c.
 
@@ -3216,11 +3269,7 @@ def main():
 
     while True:
         try:
-            updates = tg_request("getUpdates", {
-                "offset": offset,
-                "timeout": 30,
-                "allowed_updates": ["message", "callback_query"],
-            })
+            updates = poll_get_updates(offset, long_poll=25)
 
             for update in updates.get("result", []):
                 offset = update["update_id"] + 1
