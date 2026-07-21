@@ -2376,7 +2376,7 @@ def ask_claude(question, context, history=None, answer_level="seeker", madhhab=N
     if history:
         turns = []
         for h in history:
-            prefix = "User" if h["role"] == "user" else "Mizan"
+            prefix = "User" if h["role"] == "user" else "Bayan"
             turns.append(f"{prefix}: {h['text'][:500]}")
         history_block = (
             "\nPREVIOUS CONVERSATION:\n"
@@ -2394,7 +2394,7 @@ def ask_claude(question, context, history=None, answer_level="seeker", madhhab=N
     if madhhab and madhhab in MADHHAB_GUIDANCE:
         madhhab_block = f"\nMADHHAB GUIDANCE (user's declared school):\n{MADHHAB_GUIDANCE[madhhab]}\n"
 
-    prompt = f"""You are Mizan (Al-Bayan), an Islamic knowledge assistant. A user asked:
+    prompt = f"""You are Bayan, an Islamic knowledge assistant. A user asked:
 
 "{question}"
 {history_block}
@@ -3182,7 +3182,7 @@ def main():
                 if text == "/start":
                     sessions.pop(chat_id, None)  # Reset session
                     send_message(chat_id,
-                        "*Bismillah* — Welcome to Mizan 🌙\n\n"
+                        "*Bismillah* — Welcome to Bayan 🌙\n\n"
                         "I am an Islamic knowledge engine that searches primary sources "
                         "and reasons over them — not a chatbot giving opinions.\n\n"
                         "*What I search:*\n"
@@ -3214,7 +3214,7 @@ def main():
 
                 if text == "/help":
                     send_message(chat_id,
-                        "*Mizan — How to use* 📖\n\n"
+                        "*Bayan — How to use* 📖\n\n"
                         "Ask in plain language. I search the sources, then reason.\n\n"
                         "*Query types:*\n"
                         "🔍 _\"What does the Quran say about envy?\"_\n"
