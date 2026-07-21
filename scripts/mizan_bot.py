@@ -1274,6 +1274,7 @@ def lookup_verse(surah, ayah):
     english_tafsir = [t for t in tafsir if not t["english_text"].startswith("[Arabic tafsir")]
 
     return {
+        "ayah_id": a["id"],   # F-2: lets the keyed path anchor matched_passage_id
         "surah": a["surah_number"],
         "ayah": a["ayah_number"],
         "surah_name": SURAH_NAMES.get(a["surah_number"], f"Surah {a['surah_number']}"),
@@ -1304,6 +1305,7 @@ def lookup_surah_tafsir(surah_number: int, max_ayat: int = 7) -> dict:
         tafsir = [t for t in tafsir
                   if not (t.get("english_text") or "").startswith("[Arabic tafsir")]
         out.append({
+            "ayah_id": a["id"],   # F-2: keyed-path matched_passage anchor
             "surah": a["surah_number"],
             "ayah": a["ayah_number"],
             "surah_name": SURAH_NAMES.get(a["surah_number"], f"Surah {a['surah_number']}"),
@@ -1896,6 +1898,20 @@ def gather_context(question, meta=None):
     context_parts = []
     q = question.lower()
 
+    def _anchor_keyed(data):
+        # F-2 audit integrity: when a KEYED verse lookup grounds the answer (an
+        # explicit S:A or a named-verse alias like ayat al-kursi), record ITS
+        # ayah_id into meta FIRST — before the FTS/semantic supplement below — so
+        # matched_passage_id points at the dedicated verse the answer is actually
+        # built on, not whatever the FTS ranking floats to the top. For ayat
+        # al-kursi the FTS/semantic path ranks the Al-'Imran cross-reference (it
+        # shares 'al-Hayy al-Qayyum'); without this anchor the audit row would
+        # mis-attribute the answer to Al-'Imran 3:x instead of 2:255 (op#5975).
+        if meta is None or not isinstance(data, dict):
+            return
+        if data.get("ayah_id") and data.get("tafsir"):
+            meta.add_tafsir_hits([{"ayah_id": data["ayah_id"]}])
+
     # Extract keywords once
     words = [w for w in re.findall(r'\w+', q) if w not in STOP_WORDS and len(w) > 2]
 
@@ -1924,12 +1940,14 @@ def gather_context(question, meta=None):
             range_results = []
             for n in range_ayat:
                 data = lookup_verse(surah, n)
+                _anchor_keyed(data)
                 range_results.append(data)
             block = f"VERSE RANGE LOOKUP {surah}:{ayah_start}-{ayah_end}{' ' + cap_note if cap_note else ''}:\n{json.dumps(range_results, ensure_ascii=False, indent=2)}"
             context_parts.append(block)
         else:
             # Single verse (original behaviour)
             data = lookup_verse(surah, ayah_start)
+            _anchor_keyed(data)
             context_parts.append(f"VERSE LOOKUP {surah}:{ayah_start}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 
     # Hadith reference (e.g., "bukhari 1", "muslim 2345")
@@ -1971,6 +1989,7 @@ def gather_context(question, meta=None):
         # Special verse shortcut (e.g., ayat al-kursi → (2, 255))
         sv_surah, sv_ayah = alias_result
         data = lookup_verse(sv_surah, sv_ayah)
+        _anchor_keyed(data)
         context_parts.append(f"VERSE LOOKUP {sv_surah}:{sv_ayah} (special shortcut):\n{json.dumps(data, ensure_ascii=False, indent=2)}")
         resolved_surah = sv_surah
         resolved_via_special = True
@@ -2011,12 +2030,15 @@ def gather_context(question, meta=None):
         if ayat_nums:
             for n in ayat_nums[:8]:
                 data = lookup_verse(resolved_surah, n)
+                _anchor_keyed(data)
                 context_parts.append(
                     f"VERSE LOOKUP {resolved_surah}:{n} ({surah_name}):\n"
                     + json.dumps(data, ensure_ascii=False, indent=2)
                 )
         elif tafsir_intent:
             data = lookup_surah_tafsir(resolved_surah, max_ayat=7)
+            for _ay in data.get("ayat", []):
+                _anchor_keyed(_ay)  # anchor to the surah's first ayah carrying tafsir
             context_parts.append(
                 f"FULL SURAH TAFSIR for {surah_name} (Surah {resolved_surah}):\n"
                 + json.dumps(data, ensure_ascii=False, indent=2)
