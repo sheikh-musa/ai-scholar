@@ -6,6 +6,39 @@ Status: building (paused on dispatched blockers in agent_messages #972)
 Deploy URL: backend-only — `ask-scholar` Edge Function on Supabase project `tscuymavysscrvoberrr`; Telegram bots Al-Bayān + Al-Mīzān runtime per ops runbook
 Health: green on shipped substrate; yellow on v0.2 sequence (waiting on CAI dispatch since 2026-04-28T14:25 UTC, escalation ping filed msg #1023)
 
+## Self-FIX shipped — 6 self-review fixes on branch `fix/scholar-self-review-40` (2026-07-21, per msg #10515; proof reported to cc-orchestrator 'Scholar self-fix: proof')
+
+Operator-approved (msg #10515) implementation of the 6 fixes below. **Branch only — NOT deployed to live bots** (awaiting operator/hub). All tightening; none relaxes the ruling-gate → no cai question required.
+
+| # | Fix | Files | Proof |
+|---|-----|-------|-------|
+| 1 | Keyed-lookup fallback for verse/hadith/named-ayah on synthesis failure (no timeout non-answer) + `--tools ""` speedup | `mizan_bot.py` (`build_keyed_answer`, `ask_claude`) | `test_mizan_self_review_fixes.py` 23/23; ayatul-kursi/2:255/bukhari-N routed |
+| 2 | Persona-leak: root cause = `claude -p` ran agentic in repo cwd → fixed with `--tools ""` + neutral `cwd`; + `detect_dev_leak` guard on both answer surfaces; + `MIZAN_TEST_MODE` skips persistence | `mizan_bot.py`, `persist-mizan-ruling/index.ts` | leak guard: 4/4 real leak samples caught, 4/4 clean answers pass |
+| 3 | Classifier: first-person/mubtilat/intimacy ruling patterns → `query_type='ruling'` (INV-6 + F-3 fire structurally) | `query-type-classifier.ts` | `test_query_type_ruling_patterns.mjs` 14/14; 26 anchor cases no regression |
+| 4 | `output_tier` = FLOOR (most-synthetic present); MT-in-prose detection | `_shared/output-tier.ts` (extracted), `index.ts` | `test_output_tier_floor.mjs` 7/7; real 40: quoted 17→5, 14 rows corrected |
+| 5 | Relevance gate on FTS-fallback matn (lexical grounding) so "MUST surface" can't force off-topic matn | `mizan_bot.py` (`_matn_relevant_to_query`) | fasting-rescue kept, coding/decode noise dropped |
+| 6 | Machine-translation guard: ai-generated-tier matn gets a stronger "don't act on wording" flag on validity questions | `mizan_bot.py` prompt | prompt rule added |
+
+**Test totals:** 23 (py) + 14 + 7 + 27 (node) = 71 assertions pass; existing `test_cli_failure_classification` (20) + `test_tafsir_verse_routing` green. Live CLI synthesis not exercised here (subprocess CLI unauthenticated in this env) — `--tools ""` flag verified accepted; timeout-reduction claim rests on removing agentic tool-wandering + the deterministic fallback.
+
+**Open (surfaced, not decided by CC):** (a) F-3 route-to-scholar arm is dead (no `scholar_of_record`); Fix #3 pushes more users into refusal-with-no-scholar → operator product decision. (b) durable `is_test` COLUMN on `mizan_interactions` (currently client+server SKIP, no migration) — file DDL to cai if stored-flagged test rows are wanted. (c) pre-existing (not mine): deno test expects "tell me about **the** companion X" = biography but regex needs "about companion".
+
+## Self-review — last 40 Al-Mīzān answers (2026-07-21, per msg #10507; full report msg #10510)
+
+Reviewed the 40 most-recent genuine `mizan_interactions` (2026-06-21 → 2026-07-18, 5 real users, all al-mizan). Honest composition: ~31 substantive answers; **6 timeout non-answers (15%)** + **3 dev-context leaks** into the user surface.
+
+**Strengths:** fabrication discipline is exemplary (no-hallucinated-isnad held to the letter; consistent ✅/❌ grading; refuses to quote hadith from memory). Evidence-grounding strong — bot correctly declines to force-fit topically-irrelevant retrieval. Tone/pedagogy warm and Socratic; no length-budget breaches (max 3500 char).
+
+**Top defects → fixes (priority order):**
+1. **Reliability (15% timeouts)** — incl. trivial keyed lookups (Ayatul Kursi ×2, Bukhari 35). Route ayah/hadith-number/"generate <surah>" to keyed lookup; tune CLI timeout + retrieval-fallback (extend #2613/#2615 pattern).
+2. **Dev/test leak into persona** (#10/#11/#18) — model narrated its own uncommitted-prompt/pipeline state to logged interactions. Harden system prompt against pipeline self-narration; add `is_test` path so dev passes don't pollute the corpus/judge set.
+3. **Query-type classifier under-fires the scholar gate** — 7/40 first-person ruling-class Qs, only 1 tagged `query_type='ruling'` (#35 intimacy tagged `definition`). Gate is upheld by careful prose, not the structured pipeline. Strengthen `_shared` classifier so INV-6 `action_prompt`/F-3 fire structurally.
+4. **`output_tier` under-reports synthesis on mixed bodies** (#35 `quoted` but carries AI-MT matn) — record the floor (most-synthetic tier present); bless inline per-passage badges as the INV-3 mechanism.
+5. **No relevance gate before "MUST surface fiqh matn"** (#10/#11) — add similarity-score floor so it doesn't depend on model disposition.
+6. **Machine-translated ruling-bearing matn** is the top content risk — prioritize human-verified translation of most-retrieved passages / stronger "don't act on wording" gate on ruling-class MT.
+
+Net: fabrication/grounding excellent; the gap is **structural not doctrinal** — gate + tier posture rest on model disposition rather than the pipeline, and reliability+persona-integrity are eroding trust. Also flagged: `scholar_of_record` null on all 40 (F-3 route-to-scholar arm never exercised — no paired scholar yet); U3 madhhab ("Shafiʿī you follow") may be assumed not stored — verify.
+
 ## Completed (v0.1 substrate, all shipped)
 
 ### Retrieval / pipeline

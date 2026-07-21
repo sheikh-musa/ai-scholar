@@ -1,6 +1,7 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { classifyQueryType } from "../_shared/query-type-classifier.ts";
+import { inferOutputTier } from "../_shared/output-tier.ts";
 import {
   persistRulingEmission,
   type PersistRulingFields,
@@ -32,30 +33,8 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/**
- * Infer output_tier from response_text content.
- *
- * Heuristics (mizan_bot uses tier badges in the response per its prompt):
- *   - response contains 📖 (Quran/hadith verbatim) → quoted
- *   - response contains 📝 (paraphrased tafsir) → paraphrased
- *   - response contains 💭 (AI synthesis/framing) → ai-generated
- *   - else → ai-generated (conservative — mizan synthesizes by default)
- *
- * If multiple badges present, use the "narrowest" tier:
- *   quoted > paraphrased > inferred > ai-generated
- *
- * NOTE: This is a producer-side inference. The bot's prompt instructs the model
- * to use these badges; if it doesn't, we default to ai-generated rather than
- * silently picking "quoted" (which would be a worse failure mode).
- */
-export function inferOutputTier(responseText: string): "quoted" | "paraphrased" | "inferred" | "ai-generated" {
-  const hasQuoted = responseText.includes("📖");
-  const hasParaphrased = responseText.includes("📝");
-  const hasAIGen = responseText.includes("💭");
-  if (hasQuoted) return "quoted";
-  if (hasParaphrased) return "paraphrased";
-  return "ai-generated";
-}
+// inferOutputTier moved to ../_shared/output-tier.ts (dep-free + unit-testable)
+// and switched to FLOOR semantics per the 40-answer self-review (msg #10510).
 
 interface PersistMizanRequest {
   telegram_id?: string | number;
@@ -73,6 +52,12 @@ interface PersistMizanRequest {
   retrieval_config?: Record<string, unknown> | null;
   scholar_of_record?: string | null;
   retraction_of?: string | null;
+  // Dev/test pass marker (fix per 40-answer self-review, msg #10510). When true,
+  // the interaction is a developer test run and MUST NOT be written to
+  // mizan_interactions — otherwise it pollutes the judge/eval corpus and the
+  // gold-set. The bot sets this from MIZAN_TEST_MODE. Server skips the insert
+  // rather than writing a flagged row, so no schema/migration dependency.
+  is_test?: boolean;
 }
 
 async function resolveTelegramIdHash(body: PersistMizanRequest): Promise<string> {
@@ -109,6 +94,17 @@ Deno.serve(async (req) => {
   if (!body.query_text || !body.response_text) {
     return new Response(JSON.stringify({ error: "query_text and response_text required" }), {
       status: 400,
+      headers: { ...CORS_HEADERS, "content-type": "application/json" },
+    });
+  }
+
+  // is_test skip (msg #10510): developer test passes must never pollute
+  // mizan_interactions (the judge/eval/gold-set corpus). Skip the insert and
+  // return a benign marker so the bot's fail-soft persist path is undisturbed.
+  if (body.is_test === true) {
+    console.log("persist-mizan-ruling: is_test=true — skipping persistence (dev/test pass)");
+    return new Response(JSON.stringify({ skipped: true, reason: "is_test" }), {
+      status: 200,
       headers: { ...CORS_HEADERS, "content-type": "application/json" },
     });
   }

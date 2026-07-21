@@ -13,6 +13,7 @@ Requires:
 """
 
 import json
+import re
 import subprocess
 import time
 import urllib.request
@@ -69,6 +70,24 @@ SUPABASE_URL = "https://tscuymavysscrvoberrr.supabase.co"
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzY3V5bWF2eXNzY3J2b2JlcnJyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzMjEzOTQsImV4cCI6MjA4OTg5NzM5NH0.qO3XH34pDVhlxDRcKs_TBaOJtoxGiAJGBLfGpThzyDw"
 CLAUDE_PATH = os.path.expanduser("~/.local/bin/claude")
+
+# --- 40-answer self-review hardening (msg #10510) ---
+# Fix #2c: when set, this bot run is a developer/test pass. Its interactions are
+# NOT persisted to mizan_interactions (the judge/eval/gold-set corpus), so dev
+# testing can't pollute the audit substrate. See persist_emission().
+MIZAN_TEST_MODE = os.environ.get("MIZAN_TEST_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+
+# Fix #2a (persona-leak root cause): the synthesis CLI call is invoked with
+# `--tools ""` (no tools) AND cwd pointed at this empty sandbox, NOT the repo.
+# The 40-answer review found dev/test context ("uncommitted mizan_bot.py", the
+# raw RULES text, char-budget internals) leaking into user answers because
+# `claude -p` ran as a FULL AGENTIC CLI in the repo working directory with
+# filesystem/tool access, so it could read the uncommitted source + skills and
+# fold them into the reply. Disabling tools + neutralising cwd removes that
+# capability entirely (and speeds synthesis — no tool-use wandering).
+import tempfile  # noqa: E402
+_SYNTH_SANDBOX_DIR = tempfile.mkdtemp(prefix="mizan-synth-")
+
 # AL-BAYAN-COMPOSE-001 producer wiring per CAI-RESP-135
 PERSIST_FUNCTION_URL = SUPABASE_URL + "/functions/v1/persist-mizan-ruling"
 # Admin chat for the /review scholar-verification export (#2746). Unset = the
@@ -624,6 +643,34 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
             "rank": r.get("rank", 0.0),
         })
     return {"results": results}
+
+
+# Ultra-generic words that appear in almost every fiqh matn — they do NOT count
+# as evidence that a keyword-fallback hit actually answers the user's question.
+_MATN_GENERIC_WORDS = {"quran", "qur", "islam", "islamic", "allah", "muslim",
+                       "muslims", "religion", "deen", "book", "verse", "chapter"}
+
+
+def _matn_relevant_to_query(hit, query_words) -> bool:
+    """Fix #5 (msg #10510): True iff an FTS-fallback matn hit is lexically grounded
+    in the user's LITERAL query terms — guards the 'MUST surface matn' rule from
+    force-quoting off-topic keyword matches.
+
+    Prefix-stem (len>=4) matching so 'nullifies'↔'nullify', 'fasting'↔'fast' count;
+    a matn sharing no user content word (fasting rules vs a 'coding' query) is
+    dropped. Ultra-generic words (quran/islam/…) are excluded so they can't rescue
+    an otherwise off-topic hit (e.g. 'decode the quran').
+    """
+    if not query_words:
+        return False
+    haystack = ((hit.get("text") or "") + " " + (hit.get("baab") or "")).lower()
+    for w in query_words:
+        if w in _MATN_GENERIC_WORDS:
+            continue
+        needle = w[:4] if len(w) >= 4 else w
+        if needle in haystack:
+            return True
+    return False
 
 
 def _extract_keyword_snippet(text: str, keywords: list, before: int = 500, after: int = 1500) -> str:
@@ -2076,6 +2123,18 @@ def gather_context(question, meta=None):
         if not fiqh_data["results"]:
             # FTS fallback only when semantic returns nothing above threshold
             fiqh_data = lookup_fiqh(" ".join(words[:4]), limit=3)
+            # Fix #5 (msg #10510): the semantic path has a principled 0.50 relevance
+            # gate; the FTS keyword fallback had NONE, so off-topic queries ("decode
+            # the quran", "coding") keyword-matched generic matn (khutbah, tayammum)
+            # which the prompt's "MUST surface matn" rule then force-quoted verbatim
+            # (review #10/#11). Gate the fallback on genuine lexical grounding: keep a
+            # hit only if the matn text/baab actually contains one of the user's
+            # LITERAL content words (not just an expanded synonym). This preserves the
+            # "what nullifies the fast" rescue (matn contains "fast"/"nullif") while
+            # dropping noise (matn about fasting shares no word with "coding").
+            if fiqh_data.get("results"):
+                fiqh_data["results"] = [h for h in fiqh_data["results"]
+                                        if _matn_relevant_to_query(h, words)]
         if fiqh_data["results"]:
             if meta is not None:
                 meta.add_juridical_hits(fiqh_data["results"])
@@ -2183,8 +2242,127 @@ def _is_transient_cli_error(detail) -> bool:
     return any(h in t for h in _CLI_NETWORK_HINTS)
 
 
-def ask_claude(question, context, history=None, answer_level="seeker", madhhab=None):
+# ---------------------------------------------------------------------------
+# 40-answer self-review helpers (msg #10510)
+# ---------------------------------------------------------------------------
+
+def _format_verse_answer(data):
+    """Format a lookup_verse() result as a deterministic, retrieval-only answer."""
+    if not data or data.get("error"):
+        return None
+    lines = [f"📖 *({data['surah_name']}, {data['surah']}:{data['ayah']})*", ""]
+    if data.get("arabic"):
+        lines.append(f"> {data['arabic']}")
+    if data.get("translation"):
+        tr = f"> \"{data['translation']}\""
+        if data.get("translator"):
+            tr += f" — {data['translator']}"
+        lines.append(tr)
+    for t in (data.get("tafsir") or [])[:2]:
+        body = (t.get("english_text") or "").strip()
+        if len(body) > 700:
+            body = body[:700].rsplit(" ", 1)[0] + "…"
+        badge = "📖" if t.get("output_tier") == "quoted" else "📝"
+        lines += ["", "---", f"{badge} *{t.get('scholar_name', '?')}* "
+                  f"({t.get('source_work', '')}): {body}"]
+    lines += ["", "---", "_Direct lookup of the verse and its tafsir from the corpus "
+              "(retrieval only). Ask a follow-up for a fuller explanation._"]
+    return "\n".join(lines).strip()
+
+
+def _format_hadith_answer(h, col, num):
+    """Format a lookup_hadith() result (or an honest not-found) as a deterministic answer."""
+    if not h or h.get("error"):
+        # Honest not-found beats the generic timeout message. Bukhari #35 genuinely
+        # isn't in the corpus; numbering differs across editions (review #27).
+        return (f"I don't have {col.title()} #{num} in this corpus. Hadith numbering differs "
+                f"across editions (Khan / Fath al-Bari / Arabic combined), so a bare number is "
+                f"ambiguous. Tell me the book/chapter (e.g. Kitab al-Iman) or a phrase from the "
+                f"text, and I'll pull the right narration.")
+    grade = (h.get("grading") or "").lower()
+    badge = {"sahih": "✅ Sahih", "hasan": "⚠️ Hasan",
+             "daif": "❌ Da'if", "da'if": "❌ Da'if"}.get(grade, grade or "")
+    head = f"📖 *({h.get('collection_full', col.title())} #{num}"
+    if badge:
+        head += f" · {badge}"
+    if h.get("narrator"):
+        head += f" · {h['narrator']}"
+    head += ")*"
+    lines = [head, ""]
+    if h.get("arabic_text"):
+        lines.append(f"> {h['arabic_text']}")
+    if h.get("english_text"):
+        lines.append(f"> \"{h['english_text']}\"")
+    lines += ["", "---", "_Direct lookup from the corpus (retrieval only)._"]
+    return "\n".join(lines).strip()
+
+
+def build_keyed_answer(question):
+    """Deterministic, retrieval-only answer for pure keyed-lookup queries.
+
+    Returns a formatted verbatim answer when the query is a keyed lookup —
+    surah:ayah, a named-ayah alias (ayat al-kursi → 2:255), or a hadith reference
+    (bukhari 35) — else None. Used as ask_claude's fallback (Fix #1) so a keyed
+    lookup can never degrade into a synthesis-timeout non-answer.
+
+    F-1-aligned (retrieval, no LLM synthesis) and quoted/paraphrased tier — the
+    safest answer shape. It does NOT fire for ruling-class queries: keyed lookups
+    are verse/hadith DISPLAY only, never a fiqh verdict.
+    """
+    q = question.lower()
+    # 1. Explicit surah:ayah (single verse; ranges stay on the synthesis path)
+    m = re.search(r'\b(\d{1,3}):(\d{1,3})\b', question)
+    if m:
+        return _format_verse_answer(lookup_verse(int(m.group(1)), int(m.group(2))))
+    # 2. Named-ayah alias (ayat al-kursi, etc.) → (surah, ayah) tuple
+    special = match_surah_alias(question)
+    if isinstance(special, tuple):
+        return _format_verse_answer(lookup_verse(special[0], special[1]))
+    # 3. Hadith reference (bukhari 35, muslim 2345)
+    hm = re.search(r'(bukhari|muslim|abudawud|abu dawud|tirmidhi|nasai|ibnmajah|ibn majah)'
+                   r'\s*(?:#?\s*)?(\d+)', q)
+    if hm:
+        col = hm.group(1).replace(" ", "")
+        return _format_hadith_answer(lookup_hadith(col, hm.group(2)), col, hm.group(2))
+    return None
+
+
+# Fix #2b: defence-in-depth guard against dev/test/pipeline text reaching a user
+# answer. The ROOT cause is fixed by `--tools ""` + neutral cwd (see ask_claude);
+# this backstop catches any residual self-narration. Markers are internal
+# identifiers / phrases that can never legitimately appear in an Islamic answer.
+_DEV_LEAK_MARKERS = [
+    r'mizan_bot\.py', r'albayan_bot\.py', r'ask-scholar', r'gather_context',
+    r'persist-mizan', r'supabase/functions', r'\.ts\b',
+    r'uncommitted', r'test/debug pass', r'\btest pass\b', r'\bdebug pass\b',
+    r'the response Al-M[iī]z[aā]n would send', r'\bpersona response\b',
+    r'not the bot persona', r'FIQH MATCHED PASSAGES', r'injected RULES',
+    r'\bRULES:', r'\bsystem prompt\b', r'MUST surface', r'3900[-\s]?char',
+    r'\bchar budget\b', r'similarity gate', r'relevance gate', r'Flag for you',
+    r'\bretrieval flag\b',
+]
+_DEV_LEAK_RE = re.compile("|".join(_DEV_LEAK_MARKERS), re.IGNORECASE)
+
+
+def detect_dev_leak(answer):
+    """Return the first leaked marker if the answer contains dev/test/pipeline
+    meta-language, else None. Fix #2b (msg #10510)."""
+    if not answer:
+        return None
+    m = _DEV_LEAK_RE.search(answer)
+    return m.group(0) if m else None
+
+
+def ask_claude(question, context, history=None, answer_level="seeker", madhhab=None, fallback_answer=None):
     """Use Claude Code CLI to reason over the context.
+
+    fallback_answer: a deterministic, retrieval-only answer (see build_keyed_answer)
+      for lookup-class queries (verse ref / hadith number / named-ayah). When the
+      CLI fails (timeout / network / processing error), this is returned INSTEAD of
+      the generic "try again" message, so a trivial keyed lookup can never degrade
+      into a non-answer. Fix #1 per the 40-answer self-review (msg #10510) — the
+      6/40 (15%) hard-failure rate included "generate ayatul kursi" (×2) and
+      "bukhari 35", all of which are pure keyed lookups.
 
     answer_level: 'layman' | 'seeker' (default) | 'scholar' — controls audience-tier
       guidance injected into the system prompt. Per-session preference adjustable via
@@ -2244,6 +2422,15 @@ RULES:
   these passages. After each matn quotation, append:
   "This passage is from the Shafi'i primer for reference; consult a qualified
   scholar for application to your specific situation."
+- MACHINE-TRANSLATION GUARD: when a matn passage's Tier (from the FIQH MATCHED
+  PASSAGES block) is "ai-generated" — i.e. an auto/Claude/OpenITI translation, not
+  a human-vetted rendering — you MUST additionally flag the WORDING as unverified.
+  After that passage append this second line VERBATIM:
+  "⚠️ Machine translation — the wording is an unverified reference pointer, not an
+  authoritative text. Do not act on the exact wording without a qualified scholar."
+  This is non-negotiable on any question about the validity/permissibility of an
+  act (wudu, salah, fasting, marital relations, etc.), where a user might act on
+  the words directly.
 - Telegram message budget: aim for under 3900 chars total (hard limit is 4096).
   PRIORITY when fitting: surface the FULL matn enumeration verbatim — never
   summarize an arkan/wajibat/shurut/mubtilat/nawaqid list, never drop items
@@ -2293,8 +2480,13 @@ Respond directly to the user's question:"""
     for attempt in range(max_attempts):
         try:
             result = subprocess.run(
-                [CLAUDE_PATH, "-p", prompt, "--output-format", "text"],
+                # Fix #2a: `--tools ""` disables ALL tools so this is pure text
+                # synthesis — the CLI cannot read the repo/uncommitted source/skills
+                # and fold them into the answer (the persona-leak root cause). cwd
+                # is a neutral empty sandbox, not the repo, as defence-in-depth.
+                [CLAUDE_PATH, "-p", prompt, "--tools", "", "--output-format", "text"],
                 capture_output=True, text=True, timeout=180,
+                cwd=_SYNTH_SANDBOX_DIR,
                 env={**os.environ, "PATH": os.path.expanduser("~/.local/bin") + ":" + os.environ.get("PATH", "")}
             )
             if result.returncode == 0 and result.stdout.strip():
@@ -2308,11 +2500,17 @@ Respond directly to the user's question:"""
                     time.sleep(2 * (attempt + 1))
                     continue
                 print(f"  -> Claude CLI transient failure exhausted: {last_detail[:120]}")
-                return _CLI_NETWORK_MSG
+                return fallback_answer or _CLI_NETWORK_MSG
             # Genuine, non-transient processing error — honest, not "unknown".
             print(f"  -> Claude CLI processing error: {last_detail[:120]}")
-            return _CLI_PROCESSING_MSG
+            return fallback_answer or _CLI_PROCESSING_MSG
         except subprocess.TimeoutExpired:
+            # Fix #1: a lookup-class query with a deterministic keyed answer must
+            # never degrade into the generic "try again" non-answer on synthesis
+            # timeout — return the retrieval-only answer instead.
+            if fallback_answer:
+                print("  -> Claude CLI timeout; serving deterministic keyed-lookup fallback")
+                return fallback_answer
             return ("I'm taking longer than usual to think this through — the topic needs careful "
                     "consideration. Try asking again, or rephrase as a more specific question.")
         except Exception as e:
@@ -2323,11 +2521,11 @@ Respond directly to the user's question:"""
                 continue
             if _is_transient_cli_error(str(e)):
                 print(f"  -> Claude CLI transient exception exhausted: {last_detail[:120]}")
-                return _CLI_NETWORK_MSG
+                return fallback_answer or _CLI_NETWORK_MSG
             print(f"  -> Claude CLI unexpected error: {last_detail[:120]}")
-            return _CLI_UNEXPECTED_MSG
+            return fallback_answer or _CLI_UNEXPECTED_MSG
     # All attempts exhausted on transient failures.
-    return _CLI_NETWORK_MSG
+    return fallback_answer or _CLI_NETWORK_MSG
 
 
 # --- Persistence helper (AL-BAYAN-COMPOSE-001 / CAI-RESP-135) ---
@@ -2342,13 +2540,23 @@ def persist_emission(chat_id, query_text, response_text, retrieval_ids=None, mat
     retrieval row ID that grounded the response (tafsir ayah_ids, juridical_text_ids,
     hadith ids). matched_passage_id is the top tafsir hit's ayah_id when
     search_tafsir_fts returned ≥1 row, else null.
+
+    Fix #2c (msg #10510): when MIZAN_TEST_MODE is set, this is a developer test
+    pass — skip persistence entirely so dev runs cannot pollute mizan_interactions
+    (the judge / eval / gold-set corpus). Client-side skip needs no schema change;
+    is_test is also sent so a future stored-and-flagged path can be enabled server
+    side without touching the bot.
     """
+    if MIZAN_TEST_MODE:
+        print("  -> MIZAN_TEST_MODE: skipping persist_emission (dev/test pass, not written)")
+        return None
     payload = {
         "telegram_id": chat_id,
         "query_text": query_text[:2000],   # keep request small
         "response_text": response_text[:5000],
         "retrieval_ids": retrieval_ids or [],
         "matched_passage_id": matched_passage_id,
+        "is_test": False,
     }
     # CAI-RESP-220: stamp the retrieval-substrate config so an evidence set is
     # reproducible from the audit row. Omit the key entirely when absent so the
@@ -2917,12 +3125,21 @@ def main():
                         retrieval_meta = RetrievalMeta()
                         context = gather_context(last_q, meta=retrieval_meta)
                         cb_telegram_id = cb.get("from", {}).get("id")
+                        cb_keyed_fallback = build_keyed_answer(last_q)
                         answer = ask_claude(
                             last_q, context,
                             session["history"] if session["history"] else None,
                             answer_level=new_level,
                             madhhab=get_user_madhhab(cb_telegram_id),
+                            fallback_answer=cb_keyed_fallback,
                         )
+                        # Fix #2b: same dev-leak backstop on the level-adjust surface.
+                        _cb_leak = detect_dev_leak(answer)
+                        if _cb_leak:
+                            print(f"  -> DEV-LEAK GUARD tripped on callback (marker={_cb_leak!r})")
+                            answer = cb_keyed_fallback or (
+                                "Let me try that again — could you rephrase your question?"
+                            )
                         # Don't append to history a second time — just update last_*
                         session["last_context"] = context
                         cited = _extract_cited_verses(answer)
@@ -3228,12 +3445,28 @@ def main():
                     user_madhhab = get_user_madhhab(msg_telegram_id)
                     print(f"  Asking Claude... (level={session['answer_level']}, madhhab={user_madhhab or 'none'})")
                     send_typing(chat_id)
+                    # Fix #1: deterministic keyed-lookup fallback for verse/hadith
+                    # display queries — used only if synthesis fails (no timeout
+                    # non-answer for a trivial lookup).
+                    keyed_fallback = build_keyed_answer(text)
                     answer = ask_claude(
                         text, context,
                         session["history"] if session["history"] else None,
                         answer_level=session["answer_level"],
                         madhhab=user_madhhab,
+                        fallback_answer=keyed_fallback,
                     )
+                    # Fix #2b: suppress any residual dev/test/pipeline self-narration
+                    # before it reaches the user (root cause already removed via
+                    # `--tools ""` + neutral cwd). Prefer the keyed answer; else ask
+                    # to rephrase — never send the leaked meta-text.
+                    _leak = detect_dev_leak(answer)
+                    if _leak:
+                        print(f"  -> DEV-LEAK GUARD tripped (marker={_leak!r}); suppressing meta-leaked answer")
+                        answer = keyed_fallback or (
+                            "Let me try that again — could you rephrase your question? I want to "
+                            "answer from the Qur'an, tafsir, and hadith directly."
+                        )
 
                     # Update session
                     add_to_history(session, "user", text)
