@@ -1029,16 +1029,23 @@ def match_surah_alias(text: str):
     import re as _re
     t_clean = _re.sub(r"['’‘]", "", t)
 
+    def _word_hit(needle: str) -> bool:
+        # Word-boundary match, NOT bare substring. A surah alias must be a whole
+        # token — otherwise a short name fragment matches inside an unrelated word
+        # ('nisa' in 'nisab', 'event' in 'prevent'), wrongly injecting that surah's
+        # tafsir/info into a fiqh answer (op#5975 retrieval-eval false hits).
+        pat = r'(?<!\w)' + _re.escape(needle) + r'(?!\w)'
+        return bool(_re.search(pat, t_clean) or _re.search(pat, t))
+
     # Check special verse shortcuts first
     for key, val in SPECIAL_VERSES.items():
-        if key in t_clean or key in t:
+        if _word_hit(key):
             return val  # returns tuple (surah, ayah)
 
     best_len = 0
     best_num = None
     for alias, num in SURAH_ALIASES.items():
-        # Try as substring
-        if alias in t_clean or alias in t:
+        if _word_hit(alias):
             if len(alias) > best_len:
                 best_len = len(alias)
                 best_num = num
@@ -1126,6 +1133,17 @@ def is_followup(text, session):
     for pattern in FOLLOWUP_PATTERNS:
         if re.search(pattern, t, re.IGNORECASE):
             return True
+    # A message that names a specific verse / surah (or gives an explicit S:A
+    # reference) is a FRESH keyed query — it carries its own retrieval target and
+    # must never reuse the previous turn's context. Without this guard, generic
+    # corpus words in the prior query's last_topics ("ayat", "tafsir", ...)
+    # produced spurious ≥2-overlap follow-up hits, so e.g. "ayat kursi tafsir"
+    # after "1000 dinar ayat tafsir" reused stale context and never retrieved the
+    # 2:255 tafsir (operator op#5975). The explicit-continuation FOLLOWUP_PATTERNS
+    # above are checked first, so "tell me more about ayat al-kursi" is still a
+    # follow-up; only a bare verse-naming query is forced fresh here.
+    if match_surah_alias(text) is not None or re.search(r'\b\d{1,3}\s*:\s*\d{1,3}\b', t):
+        return False
     # Short messages with pronouns
     if len(words) <= 6:
         pronouns = {"that", "this", "it", "those", "these", "the same"}

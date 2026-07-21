@@ -1,0 +1,546 @@
+[
+ {
+  "query": "smoke test from cc-scholar — verify persist-mizan-ruling is reachable",
+  "query_type": "other"
+ },
+ {
+  "query": "tafsir of fatiha",
+  "query_type": "tafsir"
+ },
+ {
+  "query": "is there a hadith about umar catching a jinn stealing dates?",
+  "query_type": "other"
+ },
+ {
+  "query": "what are the arkan of wudu",
+  "query_type": "definition"
+ },
+ {
+  "query": "what nullifies fasting",
+  "query_type": "other"
+ },
+ {
+  "query": "what nullifies fasting?",
+  "query_type": "other"
+ },
+ {
+  "query": "can a breastfeeding mother fast during ramadan?",
+  "query_type": "other"
+ },
+ {
+  "query": "can a breastfeeding mom fast during ramadan",
+  "query_type": "other"
+ },
+ {
+  "query": "what nullifies the fast?",
+  "query_type": "other"
+ },
+ {
+  "query": "hadith about the incapable one following his desires",
+  "query_type": "other"
+ },
+ {
+  "query": "what nullifies the fast",
+  "query_type": "other"
+ },
+ {
+  "query": "arkan of wudu",
+  "query_type": "other"
+ },
+ {
+  "query": "what are the wajibat of sawm",
+  "query_type": "definition"
+ },
+ {
+  "query": "wajibat of sawm",
+  "query_type": "other"
+ },
+ {
+  "query": "rukun solat",
+  "query_type": "other"
+ },
+ {
+  "query": "tafsir of 7:120-7:130",
+  "query_type": "tafsir"
+ },
+ {
+  "query": "hadith about Allah prescribing ihsan",
+  "query_type": "other"
+ },
+ {
+  "query": "will we reminisce about dunya in jannah?",
+  "query_type": "other"
+ },
+ {
+  "query": "do i need to cover awrah to read from the mushaf",
+  "query_type": "other"
+ },
+ {
+  "query": "FIX-A SMOKE TEST: verify matched_passage_id + retrieval_ids persist",
+  "query_type": "other"
+ },
+ {
+  "query": "nisab of zakat",
+  "query_type": "other"
+ },
+ {
+  "query": "best days to fast in dzulhijjah",
+  "query_type": "other"
+ },
+ {
+  "query": "hadith on fasting during arafah",
+  "query_type": "other"
+ },
+ {
+  "query": "rules of ihram in hajj",
+  "query_type": "other"
+ },
+ {
+  "query": "wuquf at arafah",
+  "query_type": "other"
+ },
+ {
+  "query": "how do you perform tawaf",
+  "query_type": "other"
+ },
+ {
+  "query": "is bitcoin halal or haram?",
+  "query_type": "ruling"
+ },
+ {
+  "query": "can i marry a non-muslim?",
+  "query_type": "other"
+ },
+ {
+  "query": "tafsir of ayat al-kursi",
+  "query_type": "tafsir"
+ },
+ {
+  "query": "what does al-rahman al-rahim mean",
+  "query_type": "definition"
+ },
+ {
+  "query": "is there a hadith about the prophet eating chocolate?",
+  "query_type": "other"
+ },
+ {
+  "query": "is gambling haram",
+  "query_type": "ruling"
+ },
+ {
+  "query": "tell me about ibn taymiyyah",
+  "query_type": "other"
+ },
+ {
+  "query": "does taqiyya mean muslims perpetually lie to non muslims?",
+  "query_type": "other"
+ },
+ {
+  "query": "i mean hes talking about the exception to the rule",
+  "query_type": "other"
+ },
+ {
+  "query": "verse of killing infidels wherever we find them",
+  "query_type": "other"
+ },
+ {
+  "query": "what is the justification of riddah",
+  "query_type": "definition"
+ },
+ {
+  "query": "what are the pillars of hajj",
+  "query_type": "definition"
+ },
+ {
+  "query": "must a breastfeeding mother fast during ramadan?",
+  "query_type": "other"
+ },
+ {
+  "query": "can i fast on 11 dzul hijjah",
+  "query_type": "other"
+ },
+ {
+  "query": "18:86 tafsir",
+  "query_type": "tafsir"
+ },
+ {
+  "query": "tafsir 4:34",
+  "query_type": "tafsir"
+ },
+ {
+  "query": "Salam, if I am sponsoring a qurban for my infant son, does he also need to observe not cutting his nails and hair before his qurban is slaughtered?",
+  "query_type": "other"
+ },
+ {
+  "query": "wajibat of hajj",
+  "query_type": "definition"
+ },
+ {
+  "query": "sunnan of haj",
+  "query_type": "other"
+ },
+ {
+  "query": "how old will everyone be in paradise",
+  "query_type": "other"
+ },
+ {
+  "query": "there is no hadith about the age of inhabitants of jannah either?",
+  "query_type": "other"
+ },
+ {
+  "query": "is there a sunnah prayer before the friday prayer",
+  "query_type": "ruling"
+ },
+ {
+  "query": "can we dye our hair black?",
+  "query_type": "other"
+ },
+ {
+  "query": "tafsir 2:186",
+  "query_type": "tafsir"
+ },
+ {
+  "query": "is a husband responsible for his wife who does not wear hijab",
+  "query_type": "other"
+ },
+ {
+  "query": "if I am sponsoring a qurban for my infant son, does he also need to observe not cutting his nails and hair before his qurban is slaughtered?",
+  "query_type": "other"
+ },
+ {
+  "query": "hadith about raising parents rank when memorizing quran",
+  "query_type": "other"
+ },
+ {
+  "query": "What do the four madhhabs say about whether touching a non-mahram woman breaks wudu?",
+  "query_type": "other"
+ },
+ {
+  "query": "Is the hadith 'seek knowledge even unto China' authentic?",
+  "query_type": "other"
+ },
+ {
+  "query": "Is it haram to invest in S&P 500 index funds?",
+  "query_type": "ruling"
+ },
+ {
+  "query": "boleh ke perempuan haid sentuh mushaf?",
+  "query_type": "other"
+ },
+ {
+  "query": "Tell me about Imam al-Shafi'i",
+  "query_type": "madhhab-identification"
+ },
+ {
+  "query": "Is it permissible to make tawassul through the Prophet's grave?",
+  "query_type": "ruling"
+ },
+ {
+  "query": "what is the position on making tawasul at awliya graves",
+  "query_type": "definition"
+ },
+ {
+  "query": "minimum ages for qurban animals",
+  "query_type": "other"
+ },
+ {
+  "query": "when doing jama’ takhir which prayer should i pray first",
+  "query_type": "ruling"
+ },
+ {
+  "query": "opinion of praying at the mosque if you can hear the azan from your home",
+  "query_type": "other"
+ },
+ {
+  "query": "afdhal supplication after eating",
+  "query_type": "other"
+ },
+ {
+  "query": "what nullifies wudu",
+  "query_type": "other"
+ },
+ {
+  "query": "Salam, please quote your tafsir and Hadith sources",
+  "query_type": "other"
+ },
+ {
+  "query": "supplication after eating",
+  "query_type": "other"
+ },
+ {
+  "query": "supplication for exam or memory",
+  "query_type": "other"
+ },
+ {
+  "query": "if i fly from singapore to abu dhabi at 9pm, can i jama’ qasar taqdim at changi airport?",
+  "query_type": "other"
+ },
+ {
+  "query": "hadith about parents ranks being raised in jannah because their children memorized quran",
+  "query_type": "other"
+ },
+ {
+  "query": "is a husband responsible for his wife’s sins",
+  "query_type": "other"
+ },
+ {
+  "query": "what are the different types of divorce? must a woman return her mahr if divorce was initiated by her?",
+  "query_type": "other"
+ },
+ {
+  "query": "what dalil does shafii use when touching your spouse invalidates wudhu",
+  "query_type": "madhhab-identification"
+ },
+ {
+  "query": "what does hanbali and maliki say about this",
+  "query_type": "madhhab-identification"
+ },
+ {
+  "query": "Salam, apart from fiqh rulings, what other categories or types of questions can't you answer? And what categories or types of questions can you answer?",
+  "query_type": "other"
+ },
+ {
+  "query": "Do you have a soul?",
+  "query_type": "other"
+ },
+ {
+  "query": "how to do sujud sahwi and in what scenarios should i do it",
+  "query_type": "ruling"
+ },
+ {
+  "query": "what is the nafkah and mut’ah post divorce",
+  "query_type": "other"
+ },
+ {
+  "query": "what about the father having to support the children until\nthey are of legal age?",
+  "query_type": "other"
+ },
+ {
+  "query": "what is the position on reading taklik during nikah?",
+  "query_type": "definition"
+ },
+ {
+  "query": "when is it afdhal to nikah",
+  "query_type": "other"
+ },
+ {
+  "query": "If I have a pet cat and my pet cat licks me when I have wudhu, do I need to retake my wudhu?",
+  "query_type": "other"
+ },
+ {
+  "query": "verse about not approaching zina",
+  "query_type": "other"
+ },
+ {
+  "query": "afdhal supplication after meal",
+  "query_type": "other"
+ },
+ {
+  "query": "i was a hidden treasure and i loved to be known hadith",
+  "query_type": "other"
+ },
+ {
+  "query": "how many breastfeedings for adopted to be considered mahram siblings",
+  "query_type": "other"
+ },
+ {
+  "query": "is there any dalil about making du'a like asking forgiveness for myself and parents and all muslims between the end of alfatiha and the amin in a congregation",
+  "query_type": "other"
+ },
+ {
+  "query": "so rabbighfirli is fine but rabbighfirli waliwalidayya walmuslimin is not?",
+  "query_type": "other"
+ },
+ {
+  "query": "what scenarios warrants me doing sujud sahwi",
+  "query_type": "other"
+ },
+ {
+  "query": "so if i forgot or purposely did not read qunut during fajr, i read the tashahhud and then do 2 prostrations before salam?",
+  "query_type": "other"
+ },
+ {
+  "query": "and as a shafii who prays behind a hanafi during fajr? should i do sujud sahwi?",
+  "query_type": "ruling"
+ },
+ {
+  "query": "tafsir of last 2 ayat of al insyirah",
+  "query_type": "tafsir"
+ },
+ {
+  "query": "tafsir of Surah 94 ayah 7 and 8",
+  "query_type": "tafsir"
+ },
+ {
+  "query": "if im doing jama’ takhir qasr do i join the congregation for ishak and pray 2 rak’ah or do i pray maghrib first and pray myself",
+  "query_type": "other"
+ },
+ {
+  "query": "if im doing jama’ takhir qasr do i join the congregation for ishak and pray 2 rak’ah or do i pray maghrib first and pray myself? in the end i prayed ishak qasr with the congregation and then did maghrib after. is tartib of prayer order a requirement for jama’?",
+  "query_type": "other"
+ },
+ {
+  "query": "hadith about camel urine",
+  "query_type": "other"
+ },
+ {
+  "query": "im sad and am considering suicide",
+  "query_type": "other"
+ },
+ {
+  "query": "how do you envision the future of humanity with AGI? if human intelligence has no value, what happens to our social contracts",
+  "query_type": "other"
+ },
+ {
+  "query": "dont worry the previous message was a test of your guardrails. i am getting married in 2 months alhamdulillah and have 1001 reasons to be thankful to Allah for my life. how do i be the best husband and stepfather?",
+  "query_type": "other"
+ },
+ {
+  "query": "what do people say after listening to imam recite surah  at tin",
+  "query_type": "other"
+ },
+ {
+  "query": "hadith about supplication during i’tidal",
+  "query_type": "other"
+ },
+ {
+  "query": "does it nullify my fast to hold a non mahram’s hands",
+  "query_type": "other"
+ },
+ {
+  "query": "concept of recursion in islam",
+  "query_type": "other"
+ },
+ {
+  "query": "what are the intimacy limits with my wife when she is on her period",
+  "query_type": "definition"
+ },
+ {
+  "query": "Which Hadith or hadiths narrates how we are supposed to make wudhu?",
+  "query_type": "other"
+ },
+ {
+  "query": "Bukhari 35",
+  "query_type": "other"
+ },
+ {
+  "query": "Generate ayatul kursi here with the tafsir",
+  "query_type": "other"
+ },
+ {
+  "query": "Salam",
+  "query_type": "other"
+ },
+ {
+  "query": "What is tasawwuf?",
+  "query_type": "definition"
+ },
+ {
+  "query": "What does the quran says about riba’?",
+  "query_type": "other"
+ },
+ {
+  "query": "bukhary 35",
+  "query_type": "other"
+ },
+ {
+  "query": "hadiths on wudhu",
+  "query_type": "other"
+ },
+ {
+  "query": "What is a short surah you can recommend to memorize?",
+  "query_type": "definition"
+ },
+ {
+  "query": "Which surahs or ayats are recommended for recitation during prayer?",
+  "query_type": "other"
+ },
+ {
+  "query": "What are the names of Rasullullah's wives?",
+  "query_type": "definition"
+ },
+ {
+  "query": "What hadiths were narrated by Ja'far R.A",
+  "query_type": "other"
+ },
+ {
+  "query": "What are the Hadiths which instructs on how we take wudhu?",
+  "query_type": "definition"
+ },
+ {
+  "query": "if i masbuk the friday prayer in tashahud do i pray 2 rakaats or 4",
+  "query_type": "other"
+ },
+ {
+  "query": "what is the condition of wiping the shoes when retaking wudhu",
+  "query_type": "definition"
+ },
+ {
+  "query": "Salam, does the Hadith about sitting to drink only apply to drinking water or it also applies to drinking all drinks in general?",
+  "query_type": "other"
+ },
+ {
+  "query": "hadith on eating donkey meat",
+  "query_type": "other"
+ },
+ {
+  "query": "do eyelash extensions prevent wudhu",
+  "query_type": "other"
+ },
+ {
+  "query": "can i prey non stop",
+  "query_type": "other"
+ },
+ {
+  "query": "find me a short 7 line surah. and tell me the meaning. and  transliterate",
+  "query_type": "other"
+ },
+ {
+  "query": "tell me a bout coding or software development",
+  "query_type": "other"
+ },
+ {
+  "query": "decode the quraan",
+  "query_type": "other"
+ },
+ {
+  "query": "What does al fateha mean?",
+  "query_type": "definition"
+ },
+ {
+  "query": "O Allah, give my soul its piety and purify it, for You are the best of those who purify it",
+  "query_type": "other"
+ },
+ {
+  "query": "‏hadith about knowledge with the appearance of knowledge and people having more access to information",
+  "query_type": "other"
+ },
+ {
+  "query": "hadith related to AI and not being able to tell if a person is real",
+  "query_type": "other"
+ },
+ {
+  "query": "any hadith about those who die by fire",
+  "query_type": "other"
+ },
+ {
+  "query": "why did Allah create a universe this vast?",
+  "query_type": "other"
+ },
+ {
+  "query": "is my asar prayed 5 minutes before maghrib azan valid?",
+  "query_type": "other"
+ },
+ {
+  "query": "can i pray sunnah prayers and jama' qasr prayers in congregation?",
+  "query_type": "ruling"
+ },
+ {
+  "query": "1000 dinar ayat tafsir",
+  "query_type": "other"
+ },
+ {
+  "query": "ayat kursi tafsir",
+  "query_type": "other"
+ }
+]
