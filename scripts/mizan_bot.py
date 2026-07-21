@@ -25,6 +25,20 @@ import signal
 import datetime
 
 
+# --- Force IPv4 (op#5959 — Bayan poll-loop outage) --------------------------
+# The Studio host advertises an IPv6 address but has NO working IPv6 route, so
+# IPv6-first connects to api.telegram.org hang ("No route to host", Errno 65),
+# stalling the getUpdates long-poll and leaving user messages unanswered. Pin
+# name resolution to IPv4 so every socket uses the route that actually works.
+import socket as _socket
+_orig_getaddrinfo = _socket.getaddrinfo
+def _getaddrinfo_ipv4_only(*args, **kwargs):
+    infos = _orig_getaddrinfo(*args, **kwargs)
+    v4 = [i for i in infos if i[0] == _socket.AF_INET]
+    return v4 or infos
+_socket.getaddrinfo = _getaddrinfo_ipv4_only
+
+
 # --- Self-contained env loading (msg #2744 hardening) -----------------------
 # The bot invokes the claude CLI with os.environ; when CLAUDE_CODE_OAUTH_TOKEN
 # is absent the CLI silently falls back to the macOS keychain login, which an
