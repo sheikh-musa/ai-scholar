@@ -91,6 +91,33 @@ const RULING_PHRASES = [
   //     eating dates") stay 'other' and "rivers of wine in Paradise" does not fire.
   /\b(eat\w*|drink\w*|consum\w*|meat\s+of|flesh\s+of|slaughter\w*)\b[^?.]{0,25}\b(donkey|mule|pork|swine|pig|khinzir|khamr|alcohol|wine|liquor|carrion|maytah|maitah|dog|predator|reptile|frog|crocodile|blood)\b/i,
   /\b(donkey|pork|swine|khinzir|khamr|alcohol|carrion|maytah)\b[^?.]{0,25}\b(halal|haram|permissible|forbidden|allowed|eat\w*|meat|flesh)\b/i,
+
+  // ----- cc-scholar 40-answer self-review additions (msg #10510) -----
+  // Validity-of-my-own-act: "is my wudu valid", "is my asr (prayed 5 min before
+  // maghrib) valid", "was my prayer correct/complete". The generic
+  // /is\s+it\s+(...valid...)/ above only caught the bare pronoun "it"; users
+  // routinely ask about a possessed act ("is MY asar ... valid") — ruling-class
+  // (a personal-consequence verdict is sought). Window is generous (.{0,60})
+  // because users interpose the circumstances ("prayed 5 minutes before maghrib").
+  /\b(is|was)\s+(my|his|her|their|our|the|this|that|a|an)\b.{0,60}?\b(valid|invalid|correct|acceptable|accepted|complete|incomplete|sufficient|enough|broken|nullified|voided|void)\b/i,
+  // Mubtilat / nawaqid question — does X nullify/break/invalidate/void/prevent an
+  // act of worship. Ruling-class regardless of grammatical subject. Was 'other'
+  // for #15 ("do eyelash extensions prevent wudhu") and #37 ("does it nullify my
+  // fast to hold a non mahram's hands").
+  /\b(nullif|invalidat|breaks?|breaking|voids?|voiding|cancel(s|ling|ing)?|prevent(s|ing)?|affects?\s+(my|the)|invalid)\b.{0,40}?\b(wudu|wuduʾ|wudhu|ghusl|tayammum|salah|salat|solat|prayer|fast|fasting|sawm|siyam|saum|tahara|taharah|purity|ablution|nikah|marriage|hajj|umrah)\b/i,
+  /\bdoes\s+(it|this|that|.{0,30}?)\s+(nullify|invalidate|break|void|cancel|prevent|count|affect)\b/i,
+  // "can i <worship/permissibility verb>" — extend the verb set (incl. the common
+  // misspelling prey→pray) so worship-permission questions route to ruling not
+  // 'other'. Was 'other' for #13/#14 ("can i prey non stop").
+  /can\s+i\s+(get\s+)?(marr|divorc|combine|shorten|qasr|jama|wear|eat|drink|trade|sell|buy|invest|listen|watch|use|pray|prey|fast|touch|hold|kiss|recite|delay|skip|miss|join|make\s+up)/i,
+  // Rakaat-count of an obligatory prayer — "do i pray 2 rakaats or 4",
+  // "how many rakaats do i pray". Was 'other' for #19 (masbuk Jumu'ah).
+  /\b(do\s+i\s+pray|how\s+many\s+rak)\b.{0,20}?(\d|rak)/i,
+  // Marital-intimacy / menstruation permissibility — sensitive ruling-class. The
+  // definitional "what are the ... limits" phrasing otherwise captured #35 as
+  // 'definition' (a marital-relations verdict tagged as a vocabulary lookup).
+  /\b(intimacy|intimate|touch(ing)?|kiss(ing)?|relations?|be\s+with|sleep\s+with|contact)\b.{0,30}?\b(wife|husband|spouse|non[-\s]?mahram|mahram)\b/i,
+  /\b(menstruat|hayd|haid|nifas|istihadah|on\s+(her|my)\s+period|during\s+(her|my)\s+period|while\s+(she|i)\s+(is|am)\s+menstruat)\b/i,
 ];
 
 const DEFINITION_PHRASES = [
