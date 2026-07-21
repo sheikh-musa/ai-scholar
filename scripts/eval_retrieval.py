@@ -93,7 +93,15 @@ def corpus_has_tafsir(surah, ayah):
 
 
 def ctx_has_tafsir_for(ctx, surah, ayah):
-    """Did gather_context surface a scholar tafsir for these coords?"""
+    """Did gather_context surface a scholar tafsir for these coords?
+
+    Grades on the RETRIEVED CONTENT that grounds the answer (the tafsir text +
+    scholar name actually present in the context), NOT on the matched_passage_id
+    surah:ayah label. That distinction matters: for 'ayat kursi tafsir' the F-2
+    audit anchor can legitimately list Al-'Imran cross-reference ayat alongside
+    2:255, and a correct 2:255 answer must never be false-flagged just because a
+    cross-referenced passage carries a different surah:ayah label (Hub op#5975).
+    This function must never be rewired to read matched_passage_id."""
     if not ctx:
         return False
     has_scholar = any(name in ctx for name in SCHOLARS)
