@@ -123,8 +123,25 @@ def has_evidence(ctx):
     ))
 
 
-def grade(q):
-    """Return (grade, detail)."""
+def grade(q, item=None):
+    """Return (grade, detail).
+
+    If `item` carries an `expect_contains` list, grade STRICTLY on it: every
+    token must appear in gather_context(q). Used for pinned regression cases
+    (op#6158) where a generic has_evidence() pass is too weak — we need to
+    prove the SPECIFIC on-topic hadith text is surfaced, not just any block.
+    """
+    expect = (item or {}).get("expect_contains")
+    if expect:
+        try:
+            ctx = mb.gather_context(q)
+        except Exception as e:
+            return "BAD", f"gather_context error: {type(e).__name__}: {e}"
+        missing = [tok for tok in expect if tok not in (ctx or "")]
+        if missing:
+            return "BAD", f"expected tokens NOT surfaced: {missing}"
+        return "good-answer", f"regression tokens surfaced: {expect}"
+
     ruling = mb.match_ruling_query(q)
     high = mb.match_high_stakes_query(q)
     targets = extract_verse_targets(q)
@@ -174,7 +191,7 @@ def main():
     results = []
     for i, item in enumerate(queries):
         q = item["query"]
-        g, detail = grade(q)
+        g, detail = grade(q, item)
         results.append({"query": q, "grade": g, "detail": detail})
         if not only_bad or g == "BAD":
             mark = {"good-answer": "✓", "correct-gate": "⚖", "honest-not-found": "∅", "BAD": "✗"}[g]

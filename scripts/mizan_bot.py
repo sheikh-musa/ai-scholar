@@ -772,9 +772,16 @@ HADITH_COLLECTION_ALIASES: dict = {
     "imam muslim": "0dd871af-7513-46c0-a5a1-5f1508a52a8c",
     "al-muslim": "0dd871af-7513-46c0-a5a1-5f1508a52a8c",
     "muslim": "0dd871af-7513-46c0-a5a1-5f1508a52a8c",
-    # Sunan Abi Dawud
+    # Sunan Abi Dawud — the canonical Arabic title is "Sunan Abi Dawud" (genitive
+    # "Abi"), while the common English rendering is "Abu Dawud". Operators type
+    # both; op#6158 hit "sunan abi dawud 2162" -> not-found because only the "abu"
+    # spellings were aliased. Both nasab forms map to the same collection.
+    "sunan abi dawud": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
+    "sunan abi dawood": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
     "sunan abu dawud": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
     "sunan abu dawood": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
+    "abi dawud": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
+    "abi dawood": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
     "abu dawud": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
     "abu dawood": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
     "abudawud": "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",
@@ -825,6 +832,34 @@ def match_hadith_collection_alias(text: str):
             best_len = len(alias)
             best_id = coll_id
     return best_id
+
+
+def parse_numbered_hadith(text: str):
+    """Resolve a 'COLLECTION NUMBER' reference to (collection_id, number_str).
+
+    Reuses the multi-word HADITH_COLLECTION_ALIASES table (longest-match-wins)
+    so ANY collection spelling resolves — incl. "sunan abi dawud" — not just the
+    short hard-coded token list the legacy hadith regex carried. Mirrors the
+    named-verse alias pattern (match_surah_alias -> keyed lookup_verse) on the
+    hadith side (op#6158).
+
+    The number must FOLLOW the collection name (optionally after #, :, ',', '-',
+    'no.', or 'hadith'); a bare number elsewhere in the sentence is ignored so
+    "abu dawud on the 5 pillars" does NOT become abudawud #5. Collection must
+    come before the number. Returns (collection_id, number_str) or None.
+    """
+    t = text.lower()
+    best_len, best_id, best_end = 0, None, -1
+    for alias, coll_id in HADITH_COLLECTION_ALIASES.items():
+        idx = t.find(alias)
+        if idx != -1 and len(alias) > best_len:
+            best_len, best_id, best_end = len(alias), coll_id, idx + len(alias)
+    if best_id is None:
+        return None
+    m = re.match(r'[\s#:.,\-]*(?:no\.?\s*|hadith\s*|#\s*)?(\d{1,5})', t[best_end:])
+    if not m:
+        return None
+    return (best_id, m.group(1))
 
 
 # --- Sahaba narrator detection (built once at module load) ---
@@ -1623,6 +1658,17 @@ CONCEPT_MAP = {
     frozenset(["jama", "taqdim"]): ["combined", "advance", "two prayers", "traveling"],
     frozenset(["combining", "prayers"]): ["combined", "combine", "two prayers", "traveling"],
     frozenset(["combine", "prayers"]): ["combined", "two prayers", "traveling", "Zuhr Asr"],
+    # Anal intercourse prohibition (Abu Dawud 2162 — AbuHurayrah — "He who has
+    # intercourse with his wife through her anus is accursed"; also Abu Dawud
+    # 3904, Tirmidhi 135). The corpus wording is "anus" / "sodomy"; the user's
+    # clinical phrasing "anal intercourse" shares NO surface token with the matn,
+    # so neither FTS nor bge-m3 rerank surfaced 2162 — the on-topic hadith fell
+    # out of top-k and the bot false-negatived "no results" (op#6158 gap #2).
+    # Bridge the vocabulary so an on-topic sensitive query retrieves real corpus
+    # content instead of returning empty. Honesty discipline intact: this only
+    # widens retrieval, it does not fabricate.
+    frozenset(["anal", "intercourse"]): ["anus", "sodomy", "through her anus", "accursed"],
+    frozenset(["anal", "sex"]): ["anus", "sodomy", "through her anus", "accursed"],
 }
 
 SYNONYM_MAP = {
@@ -1671,6 +1717,10 @@ SYNONYM_MAP = {
     "sahwi": ["sajdah sahw", "prostration of forgetfulness", "abʿaḍ", "omitted sunnah", "tashahhud"],
     "sahwa": ["sajdah sahw", "prostration of forgetfulness", "abʿaḍ", "omitted sunnah"],
     "sahu": ["sajdah sahw", "prostration of forgetfulness", "abʿaḍ", "omitted sunnah"],
+    # Anal intercourse — corpus wording is "anus"/"sodomy" (op#6158 gap #2).
+    # Single-word hop so "anal ..." bridges even without the two-word concept.
+    "anal": ["anus", "sodomy", "through her anus"],
+    "sodomy": ["anus", "sodomite", "sodomise"],
 }
 
 
@@ -1880,6 +1930,40 @@ def lookup_hadith(collection, number):
     return h
 
 
+def lookup_hadith_by_collection_id(collection_id, number):
+    """Look up a specific hadith by collection UUID + number.
+
+    Sibling of lookup_hadith() (which resolves by collection NAME). Used by the
+    alias-driven numbered-lookup path (parse_numbered_hadith), which already
+    holds the collection_id from HADITH_COLLECTION_ALIASES — so we skip the
+    name round-trip and query hadiths directly. The not-found error carries the
+    collection name so the caller can render an honest "I don't have X #N".
+    """
+    cols = supabase_get("hadith_collections", {
+        "id": f"eq.{collection_id}",
+        "select": "name,full_name",
+        "limit": "1",
+    })
+    if not cols:
+        return {"error": f"Collection {collection_id} not found"}
+    col = cols[0]
+    rows = supabase_get("hadiths", {
+        "collection_id": f"eq.{collection_id}",
+        "hadith_number": f"eq.{number}",
+        "select": "hadith_number,english_text,arabic_text,grading,grading_details,narrator,section_name",
+        "limit": "1",
+    })
+    if not rows:
+        return {"error": f"Hadith {col['name']} #{number} not found",
+                "collection": col["name"], "collection_full": col["full_name"]}
+    h = rows[0]
+    h["collection"] = col["name"]
+    h["collection_full"] = col["full_name"]
+    if not h.get("grading") and col["name"] in ("bukhari", "muslim"):
+        h["grading"] = "sahih"
+    return h
+
+
 # --- Gather context for Claude ---
 MAX_CONTEXT = 25000  # chars — keeps Claude prompt lean
 
@@ -1950,13 +2034,23 @@ def gather_context(question, meta=None):
             _anchor_keyed(data)
             context_parts.append(f"VERSE LOOKUP {surah}:{ayah_start}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 
-    # Hadith reference (e.g., "bukhari 1", "muslim 2345")
-    hadith_match = re.search(r'(bukhari|muslim|abudawud|abu dawud|tirmidhi|nasai|ibnmajah|ibn majah)\s*(?:#?\s*)?(\d+)', q, re.IGNORECASE)
-    if hadith_match:
-        col_name = hadith_match.group(1).lower().replace(" ", "")
-        hnum = hadith_match.group(2)
-        data = lookup_hadith(col_name, hnum)
-        context_parts.append(f"HADITH LOOKUP {col_name} #{hnum}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
+    # Hadith reference (e.g., "bukhari 1", "muslim 2345", "sunan abi dawud 2162")
+    # Alias-driven parse FIRST so multi-word collection names resolve (op#6158);
+    # the legacy token regex stays as a safety net for anything the alias table
+    # somehow misses.
+    parsed_hadith = parse_numbered_hadith(question)
+    if parsed_hadith:
+        coll_id, hnum = parsed_hadith
+        data = lookup_hadith_by_collection_id(coll_id, hnum)
+        col_disp = data.get("collection") if isinstance(data, dict) else str(coll_id)
+        context_parts.append(f"HADITH LOOKUP {col_disp} #{hnum}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
+    else:
+        hadith_match = re.search(r'(bukhari|muslim|abudawud|abu dawud|tirmidhi|nasai|ibnmajah|ibn majah)\s*(?:#?\s*)?(\d+)', q, re.IGNORECASE)
+        if hadith_match:
+            col_name = hadith_match.group(1).lower().replace(" ", "")
+            hnum = hadith_match.group(2)
+            data = lookup_hadith(col_name, hnum)
+            context_parts.append(f"HADITH LOOKUP {col_name} #{hnum}:\n{json.dumps(data, ensure_ascii=False, indent=2)}")
 
     # Gap A/C fix: detect collection-name alias (without number) + sahaba narrator
     # These flags are used later in the FTS block to prefer a collection / narrator.
@@ -2172,7 +2266,13 @@ def gather_context(question, meta=None):
         # proxy (longer words = rarer = higher signal), then take 8. This still
         # bounds OR-expansion size while preferring topical over grammatical tokens.
         has_hadith = any("HADITH" in p for p in context_parts)
-        if not has_hadith and _ctx_size(context_parts) < MAX_CONTEXT:
+        # op#6158 gap #2: when the user EXPLICITLY asks for a hadith ("hadith on
+        # anal intercourse"), never skip hadith retrieval just because the tafsir
+        # blocks already filled the context budget — that produced a false
+        # "no results" on a topic the corpus does cover (Abu Dawud 2162). The
+        # budget still gates the OPTIONAL related-hadith supplement on non-hadith
+        # queries.
+        if not has_hadith and (wants_hadith or _ctx_size(context_parts) < MAX_CONTEXT):
             hlimit = 5 if wants_hadith else 3
             # Length-sorted, deduped, top-8 — for the FTS+SYNONYM path
             seen_w = set()
@@ -2591,7 +2691,15 @@ def build_keyed_answer(question):
     special = match_surah_alias(question)
     if isinstance(special, tuple):
         return _format_verse_answer(lookup_verse(special[0], special[1]))
-    # 3. Hadith reference (bukhari 35, muslim 2345)
+    # 3. Hadith reference (bukhari 35, muslim 2345, sunan abi dawud 2162, ...)
+    #    Alias-driven parse first so multi-word collection names resolve
+    #    (op#6158 — "sunan abi dawud 2162"); legacy regex stays as a safety net.
+    parsed = parse_numbered_hadith(question)
+    if parsed:
+        coll_id, num = parsed
+        h = lookup_hadith_by_collection_id(coll_id, num)
+        col_disp = (h.get("collection") if isinstance(h, dict) else None) or "hadith"
+        return _format_hadith_answer(h, col_disp, num)
     hm = re.search(r'(bukhari|muslim|abudawud|abu dawud|tirmidhi|nasai|ibnmajah|ibn majah)'
                    r'\s*(?:#?\s*)?(\d+)', q)
     if hm:

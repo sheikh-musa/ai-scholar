@@ -542,5 +542,24 @@
  {
   "query": "ayat kursi tafsir",
   "query_type": "other"
+ },
+ {
+  "query": "sunan abi dawud 2162",
+  "query_type": "hadith_lookup",
+  "note": "op#6158 gap#1 — numbered lookup with multi-word 'abi' collection alias must resolve to Abu Dawud 2162.",
+  "expect_contains": [
+   "abudawud",
+   "2162",
+   "accursed"
+  ]
+ },
+ {
+  "query": "hadith on anal intercourse",
+  "query_type": "other",
+  "note": "op#6158 gap#2 — sensitive-topic query must surface on-topic Abu Dawud 2162 (corpus wording 'anus'), not false-negative 'no results'.",
+  "expect_contains": [
+   "2162",
+   "accursed"
+  ]
  }
 ]
