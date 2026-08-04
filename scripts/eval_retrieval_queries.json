@@ -561,5 +561,25 @@
    "2162",
    "accursed"
   ]
+ },
+ {
+  "query": "sunan abi daud 2162",
+  "query_type": "hadith_lookup",
+  "note": "op#6474 — transliteration-robust resolver: the no-'w' 'daud' spelling must resolve to Abu Dawud 2162 exactly like 'dawud'. Prior false-negative repro: mizan_interactions cb7e6afe.",
+  "expect_contains": [
+   "abudawud",
+   "2162",
+   "accursed"
+  ]
+ },
+ {
+  "query": "abu daoud 2162",
+  "query_type": "hadith_lookup",
+  "note": "op#6474 — 'daoud' transliteration variant must also resolve to Abu Dawud 2162 (folded resolver, not a hand-added alias).",
+  "expect_contains": [
+   "abudawud",
+   "2162",
+   "accursed"
+  ]
  }
 ]

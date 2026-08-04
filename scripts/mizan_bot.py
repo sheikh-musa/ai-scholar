@@ -14,6 +14,7 @@ Requires:
 
 import json
 import re
+import unicodedata
 import subprocess
 import time
 import urllib.request
@@ -818,11 +819,82 @@ HADITH_COLLECTION_ALIASES: dict = {
 }
 
 
+# --- Transliteration-robust collection resolver (op#6457 / op#6474) ----------
+# The candidate set is CLOSED (8 collections). Rather than enumerate every raw
+# spelling a user might type (dawud/daud/dawood/daoud/dawuud — the whack-a-mole
+# hand-listing the operator rejected in op#6474), fold ANY token to a
+# transliteration-invariant KEY and match against a tiny set of canonical
+# signature keys. A new user spelling needs NO code change as long as it folds to
+# a known key. Deterministic, no LLM in the collection-resolution path
+# (tafsir-defense-funnel F-1: retrieval-first; synthesis never classifies the
+# collection). Design + test matrix: docs/BAYAN-COLLECTION-RESOLVER-NOTES.md.
+
+def _translit_key(token: str) -> str:
+    """Fold one token to a transliteration-invariant key.
+
+    Collapses the Arabic->Latin spelling variance that makes daud/dawud/dawood/
+    daoud/dawuud the SAME collection, WITHOUT merging distinct collections: the
+    'wu'/'wo' w-fold that fixes the daud family leaves 'nawawi' (wa/wi) intact, so
+    the 8 signature keys stay injective (verified in the module self-test).
+    """
+    s = unicodedata.normalize("NFKD", token.lower())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    for ch in "'’ʿʾ`":            # hamza / apostrophes -> noise
+        s = s.replace(ch, "")
+    s = re.sub(r"[^a-z]", "", s)                   # letters only
+    if not s:
+        return ""
+    for a, b in (("dh", "d"), ("dz", "d"), ("th", "t"), ("kh", "k"),
+                 ("sh", "s"), ("gh", "g"), ("oo", "u"), ("ou", "u"),
+                 ("ee", "i"), ("ii", "i"), ("uu", "u"), ("aa", "a"),
+                 ("z", "d")):                        # z->d folds tirmizi->tirmidi
+        s = s.replace(a, b)
+    s = s.replace("wu", "u").replace("wo", "o")     # dawud->daud; nawawi untouched
+    s = re.sub(r"(.)\1+", r"\1", s)                 # collapse doubled letters
+    if len(s) > 3 and s.endswith("h"):              # majah->maja
+        s = s[:-1]
+    return s
+
+
+# Canonical signature keys (post-fold) -> collection_id. Kept minimal: the
+# normalizer above collapses the raw-spelling explosion, so this table lists at
+# most a couple of DISTINCTIVE folded tokens per collection, never raw variants.
+_COLLECTION_SIGNATURES: dict = {
+    "bukari":  "8ecef668-0597-473b-a812-63b2d8c89dc6",  # bukhari / bukhaari
+    "muslim":  "0dd871af-7513-46c0-a5a1-5f1508a52a8c",
+    "daud":    "7f4503c4-71db-4f78-9ba4-b2fc95fecd06",  # (abi|abu) dawud/daud/...
+    "tirmidi": "837b319e-1a11-4794-8405-ab37712c97b2",  # tirmidhi/tirmidzi/tirmizi
+    "tirmiti": "837b319e-1a11-4794-8405-ab37712c97b2",  # tirmithi variant
+    "nasai":   "3ee87efc-1162-4431-b211-6f1c42c29353",  # nasai/nasa'i/an-nasai
+    "maja":    "e51000dc-5c1b-4ef0-8c03-849f9167e10e",  # (ibn) majah/maja
+    "nawawi":  "84c65102-f2ac-423d-87aa-5483e45c3927",
+    "arbain":  "84c65102-f2ac-423d-87aa-5483e45c3927",  # arba'in / arbain
+    "riyad":   "2d75d361-b333-4d45-b0f7-c34779f51fba",  # riyad(h) al-salihin
+    "salihin": "2d75d361-b333-4d45-b0f7-c34779f51fba",  # salihin/saliheen
+}
+
+
+def _resolve_collection_token(text: str):
+    """Return (collection_id, char_end) for the first token in *text* that folds
+    to a known collection signature key (folded length >= 4 to avoid stray short
+    tokens), else None. char_end is the index just past that token in *text*, for
+    the caller's number-follows guard."""
+    for m in re.finditer(r"[A-Za-z'’]+", text):
+        key = _translit_key(m.group(0))
+        if len(key) >= 4:
+            coll = _COLLECTION_SIGNATURES.get(key)
+            if coll:
+                return (coll, m.end())
+    return None
+
+
 def match_hadith_collection_alias(text: str):
     """
     Scan *text* for any known hadith collection alias.
     Returns collection_id (UUID str) if found, else None.
     Longest match wins to avoid short aliases shadowing longer ones.
+    Falls back to the transliteration-robust token resolver so unlisted spellings
+    ("sunan abi daud", "tirmidzi") still bias the collection preference.
     """
     t = text.lower()
     best_len = 0
@@ -831,7 +903,10 @@ def match_hadith_collection_alias(text: str):
         if alias in t and len(alias) > best_len:
             best_len = len(alias)
             best_id = coll_id
-    return best_id
+    if best_id is not None:
+        return best_id
+    resolved = _resolve_collection_token(text)
+    return resolved[0] if resolved else None
 
 
 def parse_numbered_hadith(text: str):
@@ -847,7 +922,20 @@ def parse_numbered_hadith(text: str):
     'no.', or 'hadith'); a bare number elsewhere in the sentence is ignored so
     "abu dawud on the 5 pillars" does NOT become abudawud #5. Collection must
     come before the number. Returns (collection_id, number_str) or None.
+
+    Collection resolution is transliteration-robust (op#6474): the folded token
+    resolver handles ANY reasonable spelling (daud/dawud/dawood/tirmidzi/nasa'i…);
+    the legacy alias-dict scan stays as a fallback for multi-word English titles
+    ("gardens of the righteous") that aren't single-token signatures.
     """
+    _num = r'[\s#:.,\-]*(?:no\.?\s*|hadith\s*|#\s*)?(\d{1,5})'
+    resolved = _resolve_collection_token(text)
+    if resolved is not None:
+        coll_id, end = resolved
+        m = re.match(_num, text[end:].lower())
+        if m:
+            return (coll_id, m.group(1))
+    # Fallback: legacy longest-alias-wins dict scan.
     t = text.lower()
     best_len, best_id, best_end = 0, None, -1
     for alias, coll_id in HADITH_COLLECTION_ALIASES.items():
@@ -856,7 +944,7 @@ def parse_numbered_hadith(text: str):
             best_len, best_id, best_end = len(alias), coll_id, idx + len(alias)
     if best_id is None:
         return None
-    m = re.match(r'[\s#:.,\-]*(?:no\.?\s*|hadith\s*|#\s*)?(\d{1,5})', t[best_end:])
+    m = re.match(_num, t[best_end:])
     if not m:
         return None
     return (best_id, m.group(1))

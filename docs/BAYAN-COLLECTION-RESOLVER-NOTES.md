@@ -1,8 +1,21 @@
-# Bayan hadith-collection resolver — deferred redesign notes (op#6457)
+# Bayan hadith-collection resolver — redesign notes (op#6457 → op#6474 → op#10273)
 
-**Status:** DEFERRED by operator 2026-07-23. Nothing shipped. Working tree left clean
+**Status:** ✅ SHIPPED 2026-08-04 (op#10273, "manage the bot"). The deferred
+redesign below was implemented as designed: a deterministic transliteration-folding
+resolver (`_translit_key` + `_COLLECTION_SIGNATURES` + `_resolve_collection_token`
+in `scripts/mizan_bot.py`) replaced the hard-coded alias alternation for
+numbered-hadith lookup; the alias dict is retained only as a fallback for multi-word
+English titles. 34/34 unit cases pass (daud family, all 8 collections + variants,
+guards held, adversarial no-match stays None); `eval_retrieval.py --gate` = 140/140
+PASS, 0 BAD (added `sunan abi daud 2162` + `abu daoud 2162` regression rows);
+live in-process verify against prod returned Abu Dawud #2162 for the `daud`/`daoud`
+spellings. No LLM in the resolution path (tafsir-defense-funnel F-1 preserved).
+
+---
+
+**Original status (2026-07-23):** DEFERRED by operator. Nothing shipped at the time
 (the band-aid alias edits described below were made, verified, then reverted). Focus
-shifted to irsyad. This file is the handoff for whoever picks this up.
+shifted to irsyad. This file was the handoff for whoever picked it up.
 
 ## The trigger
 
