@@ -39,6 +39,34 @@ def _getaddrinfo_ipv4_only(*args, **kwargs):
     return v4 or infos
 _socket.getaddrinfo = _getaddrinfo_ipv4_only
 
+# TCP keepalive on every https connection (op#10339 diagnosis — the recurring
+# getUpdates "wedge" is an IDLE long-poll connection silently dropped by the
+# Studio->Telegram NAT/carrier path: TCP stays ESTABLISHED locally but no bytes
+# ever return, so the poll hangs until the SIGALRM backstop at ~30-45s. Keepalive
+# probes keep the NAT mapping warm AND make the OS surface a dead connection in
+# ~keepalive_time+probes (~20s) instead of hanging, so the loop recovers faster
+# and black-holes less often. Installed as the global opener; harmless on the
+# short request/response calls, load-bearing on the long-poll.
+import http.client as _httpclient
+class _KeepAliveHTTPSConnection(_httpclient.HTTPSConnection):
+    def connect(self):
+        super().connect()
+        try:
+            s = self.sock
+            s.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+            if hasattr(_socket, "TCP_KEEPALIVE"):        # macOS: idle secs before 1st probe
+                s.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 10)
+            if hasattr(_socket, "TCP_KEEPINTVL"):
+                s.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 5)
+            if hasattr(_socket, "TCP_KEEPCNT"):
+                s.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3)
+        except Exception:
+            pass
+class _KeepAliveHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_KeepAliveHTTPSConnection, req)
+urllib.request.install_opener(urllib.request.build_opener(_KeepAliveHTTPSHandler()))
+
 
 # --- Self-contained env loading (msg #2744 hardening) -----------------------
 # The bot invokes the claude CLI with os.environ; when CLAUDE_CODE_OAUTH_TOKEN
@@ -3131,16 +3159,19 @@ def _poll_alarm_handler(signum, frame):
     raise _PollTimeout("getUpdates hard deadline exceeded")
 
 
-def poll_get_updates(offset, long_poll=25):
+def poll_get_updates(offset, long_poll=15):
     """One long-poll getUpdates with a hard SIGALRM backstop + logging.
 
     long_poll is the Telegram-side wait (seconds). The SIGALRM backstop fires at
-    long_poll + 20s, well past a healthy response but bounding a black-holed
-    connection. Returns the parsed body dict; raises on timeout/network error so
-    the caller's except path logs + retries with a fresh connection.
+    long_poll + 15s, well past a healthy response but bounding a black-holed
+    connection. Shorter long_poll (op#10339) = less idle time for the NAT path to
+    drop the connection + faster recovery from a black-hole; TCP keepalive (top of
+    file) surfaces a dead connection even sooner. Returns the parsed body dict;
+    raises on timeout/network error so the caller's except path logs + retries
+    with a fresh connection.
     """
     ts = datetime.datetime.now().strftime("%H:%M:%S")
-    deadline = long_poll + 20
+    deadline = long_poll + 15
     prev = signal.signal(signal.SIGALRM, _poll_alarm_handler)
     signal.alarm(deadline)
     try:
@@ -3503,9 +3534,11 @@ def main():
     if sys.stdin.isatty():
         signal.signal(signal.SIGTERM, handle_shutdown)
 
+    _poll_fail_streak = 0
     while True:
         try:
-            updates = poll_get_updates(offset, long_poll=25)
+            updates = poll_get_updates(offset, long_poll=15)
+            _poll_fail_streak = 0  # a successful poll clears the backoff
 
             for update in updates.get("result", []):
                 offset = update["update_id"] + 1
@@ -4094,12 +4127,17 @@ def main():
                     except Exception as send_err:
                         print(f"  -> failed to send error notification: {send_err}")
 
-        except urllib.error.URLError as e:
-            print(f"Network error: {e}. Retrying in 5s...")
-            time.sleep(5)
-        except Exception as e:
-            print(f"Error: {e}. Retrying in 5s...")
-            time.sleep(5)
+        except (urllib.error.URLError, _PollTimeout, Exception) as e:
+            # Exponential backoff on CONSECUTIVE poll failures (op#10339): during a
+            # sustained Studio->Telegram black-hole window every reconnect also
+            # black-holes, so don't hammer — back off 5->10->20->30s (capped). A
+            # single successful poll resets the streak. SIGALRM already bounds each
+            # attempt; this just avoids a tight futile retry loop during an outage.
+            _poll_fail_streak += 1
+            _backoff = min(5 * (2 ** (_poll_fail_streak - 1)), 30)
+            kind = "getUpdates black-hole" if isinstance(e, _PollTimeout) else type(e).__name__
+            print(f"Poll error ({kind}) x{_poll_fail_streak}: {e}. Retrying in {_backoff}s...")
+            time.sleep(_backoff)
 
 
 if __name__ == "__main__":

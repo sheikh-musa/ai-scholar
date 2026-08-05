@@ -23,6 +23,7 @@ REPO="/Users/Musa/wingmen/projects/ai-scholar"
 STATE_DIR="$REPO/logs/healthcheck"; mkdir -p "$STATE_DIR"
 REALERT_SEC="${REALERT_SEC:-1800}"          # 30 min between repeat alerts
 WEDGE_FRESH_SEC="${WEDGE_FRESH_SEC:-180}"   # HARD-TIMEOUT counts only if log mtime < this
+WEDGE_MIN_TIMEOUTS="${WEDGE_MIN_TIMEOUTS:-3}" # need this many recent HARD-TIMEOUTs (sustained, not a blip)
 RESTART_COOLDOWN="${RESTART_COOLDOWN:-600}" # min seconds between mizan auto-restarts (anti-thrash)
 ENCODER_URL="${ENCODER_URL:-http://100.104.36.27:8080}"
 
@@ -121,11 +122,18 @@ check_once() {
   if ! pgrep -f 'mizan_bot\.py' >/dev/null 2>&1; then
     heal_mizan "DEATH — no mizan_bot.py process"
   else
-    local log="$REPO/logs/mizan_bot.log" age tail_txt
+    # WEDGE = SUSTAINED getUpdates black-hole, not a transient blip. The bot's
+    # SIGALRM guard self-recovers from a single black-hole (op#10339), so a lone
+    # HARD-TIMEOUT is NOT a wedge — restarting on it is futile churn. Only heal if
+    # the CURRENT session (after the last boot marker) is CONTINUOUSLY timing out:
+    # >= WEDGE_MIN_TIMEOUTS HARD-TIMEOUTs recently AND the log is actively fresh.
+    local log="$REPO/logs/mizan_bot.log" age recent nfail
     age=$(( now - $(_mtime "$log") ))
-    tail_txt=$(tail -6 "$log" 2>/dev/null)
-    if [ "$age" -lt "$WEDGE_FRESH_SEC" ] && grep -q 'HARD-TIMEOUT' <<<"$tail_txt"; then
-      heal_mizan "WEDGE — process alive but getUpdates HARD-TIMEOUT (black-holed)"
+    # lines since the last "Bot is running" boot marker (ignore prior sessions)
+    recent=$(awk '/Bot is running/{buf=""} {buf=buf $0 "\n"} END{printf "%s",buf}' "$log" 2>/dev/null | tail -30)
+    nfail=$(grep -c 'HARD-TIMEOUT' <<<"$recent")
+    if [ "$age" -lt "$WEDGE_FRESH_SEC" ] && [ "$nfail" -ge "$WEDGE_MIN_TIMEOUTS" ]; then
+      heal_mizan "WEDGE — $nfail sustained getUpdates HARD-TIMEOUTs, no recovery (black-holed)"
     else
       recover mizan_bot
     fi
