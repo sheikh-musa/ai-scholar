@@ -3159,7 +3159,7 @@ def _poll_alarm_handler(signum, frame):
     raise _PollTimeout("getUpdates hard deadline exceeded")
 
 
-def poll_get_updates(offset, long_poll=15):
+def poll_get_updates(offset, long_poll=10):
     """One long-poll getUpdates with a hard SIGALRM backstop + logging.
 
     long_poll is the Telegram-side wait (seconds). The SIGALRM backstop fires at
@@ -3537,7 +3537,7 @@ def main():
     _poll_fail_streak = 0
     while True:
         try:
-            updates = poll_get_updates(offset, long_poll=15)
+            updates = poll_get_updates(offset, long_poll=10)
             _poll_fail_streak = 0  # a successful poll clears the backoff
 
             for update in updates.get("result", []):
