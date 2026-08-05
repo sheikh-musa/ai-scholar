@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Lightweight liveness watchdog for the client-facing Bayan services (#15609,
 # cai-flagged product-uptime gap: mizan_bot.py died silently for ~5 days and
-# nobody noticed). One round of checks; posts a P1 bus alert to orch-console on
-# failure. Detection-only (no auto-restart — KeepAlive/operator owns restart);
-# the point is that a dead bot is DETECTED in minutes, not days.
+# nobody noticed). One round of checks; posts bus alerts to orch-console on
+# failure. SELF-HEALS the answerer: auto-restarts mizan_bot on DEATH or WEDGE
+# (#15696 — the wedge is invisible to KeepAlive, so it needs an active kill+relaunch),
+# cooldown-gated against thrash. redirect + encoder stay detect-only.
 #
 # Run modes:
 #   scripts/bot_healthcheck.sh           # one round (for launchd StartInterval)
@@ -22,6 +23,7 @@ REPO="/Users/Musa/wingmen/projects/ai-scholar"
 STATE_DIR="$REPO/logs/healthcheck"; mkdir -p "$STATE_DIR"
 REALERT_SEC="${REALERT_SEC:-1800}"          # 30 min between repeat alerts
 WEDGE_FRESH_SEC="${WEDGE_FRESH_SEC:-180}"   # HARD-TIMEOUT counts only if log mtime < this
+RESTART_COOLDOWN="${RESTART_COOLDOWN:-600}" # min seconds between mizan auto-restarts (anti-thrash)
 ENCODER_URL="${ENCODER_URL:-http://100.104.36.27:8080}"
 
 # Bus creds: agent_messages lives in the SAME Supabase project as the corpus, so
@@ -34,17 +36,9 @@ _now() { date +%s; }
 
 _mtime() { stat -f %m "$1" 2>/dev/null || echo 0; }
 
-alert() {  # $1=service key  $2=severity(P1|P2)  $3=detail
-  local svc="$1" sev="$2" detail="$3"
-  local marker="$STATE_DIR/$svc.down" now last=0
-  now=$(_now); [ -f "$marker" ] && last=$(cat "$marker" 2>/dev/null || echo 0)
-  if [ $((now - last)) -lt "$REALERT_SEC" ]; then
-    echo "[$(date -u +%FT%TZ)] $svc DOWN ($detail) — alert suppressed (dedup)"; return
-  fi
-  echo "$now" > "$marker"
-  local subj="[bayan-health] DOWN: $svc"
-  local body="cc-scholar watchdog: client-facing service '$svc' failed liveness at $(date -u +%FT%TZ) on the Studio. $detail. Source: scripts/bot_healthcheck.sh (detection-only). If mizan_bot: @bayanQAbot is not answering — restart it (nohup or load dev.wingmen.mizan-bot.plist)."
-  if [ -z "$BUS_KEY" ]; then echo "[healthcheck] NO BUS KEY — cannot alert ($svc)"; return; fi
+notify() {  # $1=severity(P1|P2)  $2=subject  $3=body  — posts to the bus, NO dedup
+  local sev="$1" subj="$2" body="$3"
+  if [ -z "$BUS_KEY" ]; then echo "[healthcheck] NO BUS KEY — cannot notify ($subj)"; return; fi
   BUS_URL="$BUS_URL" BUS_KEY="$BUS_KEY" SUBJ="$subj" BODY="$body" SEV="$sev" python3 - <<'PY'
 import os,json,urllib.request
 row={"to_agent":"orch-console","from_agent":"cc-scholar","message_type":"update",
@@ -55,10 +49,59 @@ req=urllib.request.Request(os.environ["BUS_URL"]+"/rest/v1/agent_messages",
     headers={"apikey":os.environ["BUS_KEY"],"Authorization":"Bearer "+os.environ["BUS_KEY"],
              "Content-Type":"application/json"})
 try:
-    urllib.request.urlopen(req,timeout=10); print("[healthcheck] bus alert sent:",os.environ["SUBJ"])
+    urllib.request.urlopen(req,timeout=10); print("[healthcheck] bus msg sent:",os.environ["SUBJ"])
 except Exception as e:
-    print("[healthcheck] bus alert FAILED:",e)
+    print("[healthcheck] bus msg FAILED:",e)
 PY
+}
+
+alert() {  # $1=service key  $2=severity(P1|P2)  $3=detail — dedup'd DOWN alert
+  local svc="$1" sev="$2" detail="$3"
+  local marker="$STATE_DIR/$svc.down" now last=0
+  now=$(_now); [ -f "$marker" ] && last=$(cat "$marker" 2>/dev/null || echo 0)
+  if [ $((now - last)) -lt "$REALERT_SEC" ]; then
+    echo "[$(date -u +%FT%TZ)] $svc DOWN ($detail) — alert suppressed (dedup)"; return
+  fi
+  echo "$now" > "$marker"
+  notify "$sev" "[bayan-health] DOWN: $svc" \
+    "cc-scholar watchdog: '$svc' failed liveness at $(date -u +%FT%TZ) on the Studio. $detail. Source: scripts/bot_healthcheck.sh."
+}
+
+# Auto-heal the @bayanQAbot answerer on DEATH or WEDGE (orch-console #15696: the
+# wedge is invisible to KeepAlive since the process stays alive). Cooldown-gated
+# to prevent a boot-wedge-restart thrash loop; escalates to manual if it re-fails
+# inside the cooldown. Always notifies (cooldown IS the anti-spam, so no dedup).
+heal_mizan() {  # $1 = reason
+  local reason="$1" now last=0
+  now=$(_now)
+  local stamp="$STATE_DIR/mizan_bot.lastrestart"
+  [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
+  if [ $((now - last)) -lt "$RESTART_COOLDOWN" ]; then
+    # already auto-restarted very recently and it's down/wedged AGAIN -> stop thrashing, escalate
+    alert mizan_bot P1 "STILL DOWN after an auto-restart <${RESTART_COOLDOWN}s ago ($reason) — thrash guard tripped, NOT restarting again. MANUAL ATTENTION NEEDED."
+    return
+  fi
+  echo "$now" > "$stamp"
+  echo "[$(date -u +%FT%TZ)] AUTO-HEAL mizan_bot ($reason): kill + relaunch"
+  local p
+  for p in $(pgrep -f 'mizan_bot\.py'); do kill -TERM "$p" 2>/dev/null; done
+  sleep 3
+  for p in $(pgrep -f 'mizan_bot\.py'); do kill -9 "$p" 2>/dev/null; done
+  sleep 1
+  ( set -a; source "$REPO/.env" 2>/dev/null; set +a
+    export HOME="/Users/Musa" USER="Musa" SHELL="/bin/zsh"
+    export PATH="/usr/local/bin:/usr/bin:/bin:/Users/Musa/.local/bin"
+    cd "$REPO" || exit 1
+    nohup /usr/bin/python3 -u scripts/mizan_bot.py >> "$REPO/logs/mizan_bot.log" 2>> "$REPO/logs/mizan_bot.err" & )
+  sleep 8
+  if pgrep -f 'mizan_bot\.py' >/dev/null 2>&1; then
+    rm -f "$STATE_DIR/mizan_bot.down" 2>/dev/null   # recovered; next round re-alerts if it re-wedges
+    notify P1 "[bayan-health] AUTO-RESTARTED: mizan_bot" \
+      "cc-scholar watchdog AUTO-HEALED @bayanQAbot at $(date -u +%FT%TZ). Trigger: $reason. New pid $(pgrep -f 'mizan_bot\.py' | head -1). getUpdates should recover; please confirm a client query answers. (self-heal per #15696)"
+  else
+    notify P1 "[bayan-health] AUTO-RESTART FAILED: mizan_bot" \
+      "cc-scholar watchdog tried to auto-heal @bayanQAbot ($reason) but NO process came up. MANUAL ATTENTION NEEDED."
+  fi
 }
 
 recover() {  # clear the down-marker + note recovery once
@@ -73,15 +116,16 @@ recover() {  # clear the down-marker + note recovery once
 check_once() {
   local now; now=$(_now)
 
-  # 1. QA answerer (@bayanQAbot). DEATH = the 5-day outage.
+  # 1. QA answerer (@bayanQAbot). Auto-heals on DEATH (5-day outage) or WEDGE
+  #    (black-holed getUpdates — invisible to KeepAlive). #15696.
   if ! pgrep -f 'mizan_bot\.py' >/dev/null 2>&1; then
-    alert mizan_bot P1 "no mizan_bot.py process — the @bayanQAbot answerer is DEAD"
+    heal_mizan "DEATH — no mizan_bot.py process"
   else
     local log="$REPO/logs/mizan_bot.log" age tail_txt
     age=$(( now - $(_mtime "$log") ))
     tail_txt=$(tail -6 "$log" 2>/dev/null)
     if [ "$age" -lt "$WEDGE_FRESH_SEC" ] && grep -q 'HARD-TIMEOUT' <<<"$tail_txt"; then
-      alert mizan_bot P1 "process alive but getUpdates is WEDGED (recent HARD-TIMEOUT, black-holed connection)"
+      heal_mizan "WEDGE — process alive but getUpdates HARD-TIMEOUT (black-holed)"
     else
       recover mizan_bot
     fi
