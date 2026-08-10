@@ -16,12 +16,16 @@ This is the single clearest product-market signal in the data: users come to an 
 
 ## 2. Root cause — classifier is correct, the corpus is absent
 
-Verified against `supabase/functions/_shared/query-type-classifier.ts`:
+Verified against `supabase/functions/_shared/query-type-classifier.ts` (ran `classifyQueryType` on the live query set):
 
-- `DEFINITION_PHRASES` (lines 132–133) **already** classifies `arkan of wudu`, `wajibat of sawm`, `rukun solat`, `nullifiers of fasting` as **`definition`** — which is INV-6-exempt (no `action_prompt`) and **not** F-3 scholar-gated. That routing is *correct*: enumerating the pillars of wudūʾ is catechism-level established knowledge, not a fatwā.
-- So these queries reach the retrieval funnel fine — and find **nothing**, because the corpus is tafsir (Ibn Kathir / Al-Saʿdi) + hadith (Nawawi / Riyāḍ). There is **no fiqh-primer layer** for `search_*_fts` to return.
+- `DEFINITION_PHRASES` (lines 132–133) correctly classifies the noun-phrase forms — `arkan of wudu`, `nisab of zakat`, `mubtilat of sawm`, `nawaqid of wudu` → **`definition`** (INV-6-exempt, not F-3-gated). Enumerating the pillars of wudūʾ is catechism, not a fatwā.
+- So these reach the funnel fine and find **nothing** — the corpus is tafsir + hadith, with **no fiqh-primer layer** for `search_*_fts` to return. That is the core gap.
 
-**Conclusion:** the definition-class bulk needs **no classifier change and no F-3 change** — purely a corpus + FTS-wiring job. This is a clean, low-risk layer.
+**But verification surfaced TWO boundary edge-cases the build must resolve** (RULING has classifier priority, so these route oppositely to intent — see §4 for evidence):
+- **Over-gate:** English interrogative enumerations — `what nullifies the fast`, `what breaks the fast`, `what nullifies wudu`, `nullifiers of fasting` — hit the `nawaqid` RULING regex (lines 78/107) and route to **`ruling`** (F-3-gated). Post-primer these top-demand *enumeration* queries would be **refused/gated instead of answered from the primer**. (Corrects an earlier overstatement that these were "already definition" — only the Arabic noun-phrase forms are.)
+- **Under-gate:** situational `can a breastfeeding mother fast` → **`other`** (escapes F-3), because the `can a (muslim|woman|man|…)` set (line 63) omits descriptors like "mother"/"nursing".
+
+**Conclusion:** the corpus gap is the main job (no classifier change for the noun-phrase bulk), but the primer's real-world efficacy + the confirmed boundary both require a **small, F-3-posture-sensitive classifier tune** (§4) shipped *with* the corpus, not a standalone change.
 
 ## 3. Proposed design (definition-class fiqh primer)
 
@@ -39,7 +43,19 @@ A new corpus layer of **vetted, named, madhhab-attributed** primer content, serv
 Situational / applied verdicts stay **F-3 scholar-gated regardless of corpus**:
 
 - `can a breastfeeding mother fast in ramaḍān` (a rukhṣa determination applied to a person) → **ruling-class**; either a paired scholar-of-record answers, or the bot emits the 4-tier-transparency refusal. The primer never ships a fatwā.
-- Note: the classifier currently under-catches `can a <breastfeeding mother>…` (the `can a (muslim|woman|man|…)` phrase at line 63 omits "mother") and may tag it `other`. `other` is **not** F-3-gated — a small, separate classifier-tune item (route rukhṣa situationals to `ruling`), tracked apart from this corpus proposal.
+
+**Verified classifier evidence** (`classifyQueryType`, run 2026-08-11) — two edge-cases that must be tuned *with* the primer so the boundary above actually holds:
+
+| query | current | intended | issue |
+|---|---|---|---|
+| `arkan of wudu`, `nisab of zakat`, `mubtilat of sawm`, `nawaqid of wudu` | definition | definition | ✅ correct |
+| `what nullifies the fast`, `what breaks the fast`, `what nullifies wudu`, `nullifiers of fasting` | **ruling** | definition | **over-gate** — enumeration blocked from the primer |
+| `can a breastfeeding mother fast`, `can a nursing woman skip fasting` | **other** | ruling | **under-gate** — situational verdict escapes F-3 |
+| `can a woman fast while breastfeeding`, `is it permissible for a nursing mother to skip fasting` | ruling | ruling | ✅ correct |
+
+The tune (both F-3-posture-sensitive → flagged to cai, shipped WITH the corpus, not standalone):
+- **Over-gate fix:** general *enumeration* interrogatives (`what breaks/nullifies the fast/wudu`, no personal/possessive subject) → `definition` (primer-answerable), while situational *validity* (`does my X break my fast`, `is my wudu valid`) stays `ruling`. The line between "enumerate the nawāqiḍ" and "is this a nāqiḍ for me" is subtle enough to warrant the scholar-of-record's input when chosen.
+- **Under-gate fix:** broaden the `can a <person>` set to catch descriptor-prefixed subjects (`can a breastfeeding/nursing/pregnant/menstruating <person>`) → `ruling`.
 
 ## 5. Governance — why this is a decision, not a CC ship
 
