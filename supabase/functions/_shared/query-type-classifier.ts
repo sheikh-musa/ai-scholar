@@ -40,6 +40,15 @@ const RULING_KEYWORDS = new Set([
 const RULING_PHRASES = [
   /is\s+it\s+(halal|haram|permissible|allowed|forbidden)\s+to/i,
   /can\s+i\s+.+\s+in\s+islam/i,
+  // FIQH-PRIMER-01 under-gate fix (CAI-RESP-813 amendment, SAFETY-CRITICAL):
+  // "can a <descriptor> <person> <worship act>" is a situational/person-specific
+  // permissibility verdict and MUST route to ruling (F-3), never escape to
+  // 'other' and thus reach the primer. The line-below `can a (muslim|woman|...)`
+  // set omitted descriptor-prefixed subjects ("breastfeeding mother", "nursing
+  // woman", "traveller", "sick person"), so these were classified 'other'
+  // (not F-3-gated). This catches any "can a <up to 3 words> <permissibility
+  // verb>". Enumerations never start "can a", so no over-gate risk.
+  /can\s+an?\s+[\w'-]+(?:\s+[\w'-]+){0,2}\s+(fast|pray|prey|marry|divorc\w*|combin\w*|shorten|qasr|jama|wear|eat|drink|trade|sell|buy|invest|listen|watch|use|touch|hold|kiss|recit\w*|delay|skip|miss|join|give|take|travel|wipe|attend|lead|perform|make\s+up)\b/i,
   /ruling\s+on/i,
   /is\s+it\s+ok(ay)?\s+to/i,
   /am\s+i\s+allowed\s+to/i,
@@ -167,6 +176,27 @@ const TAFSIR_PHRASES = [
   /surah\s+\w+\s+(ayah|verse)/i,
 ];
 
+// FIQH-PRIMER-01 over-gate fix (CAI-RESP-813 amendment). A BARE enumeration of
+// the settled nawaqid/mubtilat of an act of worship ("what breaks the fast",
+// "nullifiers of fasting") is definition-class and should reach the primer —
+// but the nawaqid RULING regexes (F-3) were swallowing it. This carve-out is
+// TIGHTLY anchored (^...$, generic ibadah object only, NO personal/possessive
+// subject and NO specific act) so it is PROVABLY not situational: any query
+// with a specific act ("does eyelash extension break the fast") or possessive
+// ("what breaks MY fast if ...") or trailing clause fails the anchor and falls
+// through to the ruling-first flow. Per the amendment's HARD RULE, ambiguity
+// defaults to F-3-gate — so this only fires on the unambiguous bare form.
+const _IBADAH =
+  "(?:fast|fasting|sawm|siyam|wudu|wudhu|wudoo|ablution|ghusl|salah|salat|solat|prayer|tayammum|hajj|umrah)";
+const BARE_ENUMERATION = new RegExp(
+  `^(?:what|which)\\s+(?:are\\s+the\\s+)?(?:things?\\s+that\\s+)?` +
+    `(?:nullif\\w*|invalidat\\w*|break\\w*|void\\w*|annul\\w*|cancel\\w*|mubtil\\w*|mufsid\\w*|naqid\\w*|nawaqid)\\s+` +
+    `(?:the\\s+|a\\s+)?${_IBADAH}\\s*\\??$` +
+    `|^(?:the\\s+)?(?:nullifiers?|invalidators?|breakers?|voiders?|cancellers?|mubtilat|mufsidat|nawaqid)\\s+` +
+    `(?:of\\s+)?(?:the\\s+)?${_IBADAH}\\s*\\??$`,
+  "i",
+);
+
 // ---------------------------------------------------------------------------
 // Core classifier
 // ---------------------------------------------------------------------------
@@ -190,6 +220,15 @@ export function classifyQueryType(text: string): ClassificationResult {
   const matched: string[] = [];
   const lower = text.toLowerCase();
   const tokens = lower.split(/\s+/);
+
+  // FIQH-PRIMER-01 over-gate carve-out — checked BEFORE ruling so a BARE, tightly
+  // anchored enumeration ("what breaks the fast", "nullifiers of fasting") reaches
+  // the primer as 'definition'. Provably not situational (see BARE_ENUMERATION);
+  // anything ambiguous fails the anchor and falls through to the ruling-first
+  // fail-safe below. Ordering exception is deliberate and bounded.
+  if (BARE_ENUMERATION.test(text)) {
+    return { type: "definition", confidence: "high", matched: ["definition:bare-enumeration"] };
+  }
 
   const hasRulingKeyword = tokens.some((t) => RULING_KEYWORDS.has(t.replace(/[?.,!'"]/g, "")));
   if (hasRulingKeyword) matched.push("ruling:keyword");

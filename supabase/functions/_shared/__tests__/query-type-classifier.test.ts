@@ -77,3 +77,68 @@ Deno.test("priority: ruling-class keywords win over definition shape", () => {
   const { type } = classifyQueryType("What is the ruling on insurance?");
   assertEquals(type, "ruling");
 });
+
+// ---------------------------------------------------------------------------
+// FIQH-PRIMER-01 boundary (CAI-RESP-813 + amendment): the classifier must
+// IMPLEMENT the confirmed boundary — enumeration=primer(definition),
+// situational=F-3(ruling), AMBIGUITY defaults to F-3-gate. Ships WITH the
+// primer corpus (§6.6 bundle). These are the eval-both-ways cases cai required.
+// ---------------------------------------------------------------------------
+
+// SAFETY-CRITICAL (under-gate): a situational / person-specific verdict must
+// NEVER route to definition/primer — that would ship a quasi-fatwa. Adversarial
+// set incl. near-misses of the enumeration form. ALL must be 'ruling'.
+const SITUATIONAL_MUST_GATE: string[] = [
+  "can a breastfeeding mother fast during ramadan",
+  "can a breastfeeding mother fast during ramadan?",
+  "can a nursing woman skip fasting",
+  "can a pregnant woman skip fasting",
+  "can a traveller shorten his prayer",
+  "can a sick person combine prayers",
+  "can a menstruating woman recite quran",
+  // near-misses of the enumeration form — a SPECIFIC act or POSSESSIVE subject
+  // makes it situational; must fall through to the F-3 fail-safe, not the primer:
+  "does eyelash extension break the fast",
+  "does coffee break the fast",
+  "what breaks my fast if i brush my teeth",
+  "what nullifies the fast if i swallow water while doing wudu",
+];
+
+Deno.test("boundary: situational verdicts NEVER reach the primer (adversarial, must gate)", () => {
+  for (const q of SITUATIONAL_MUST_GATE) {
+    const { type } = classifyQueryType(q);
+    assertEquals(
+      type,
+      "ruling",
+      `SAFETY: "${q}" -> ${type}; a situational verdict must route to ruling (F-3), never definition/primer`,
+    );
+  }
+});
+
+// UX (over-gate): bare enumerations of settled ruling-facts should reach the
+// primer — i.e. route to 'definition' (INV-6-exempt, not F-3-gated).
+const ENUMERATION_TO_PRIMER: string[] = [
+  "what nullifies the fast",
+  "what breaks the fast",
+  "what nullifies wudu",
+  "what invalidates wudu",
+  "what breaks wudu",
+  "nullifiers of fasting",
+  "breakers of the fast",
+  // already-correct Arabic noun-phrase forms — keep them green (guard):
+  "mubtilat of sawm",
+  "nawaqid of wudu",
+  "arkan of wudu",
+  "nisab of zakat",
+];
+
+Deno.test("boundary: bare enumerations route to the primer (definition)", () => {
+  for (const q of ENUMERATION_TO_PRIMER) {
+    const { type } = classifyQueryType(q);
+    assertEquals(
+      type,
+      "definition",
+      `"${q}" -> ${type}; a bare enumeration of settled facts should route to definition (primer)`,
+    );
+  }
+});
