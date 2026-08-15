@@ -27,3 +27,8 @@ scripts/*.checkpoint.json
 scripts/.*.checkpoint.json
 scripts/.asbab_retag_rollback/
 logs/*.err
+
+# Agent handoff artifacts — per-lane recycle handoffs, never committed (CAI-944).
+# Keep the exclusion in TRACKED history so a fresh worktree inherits it (the gap
+# CAI-943 left when a lane excluded it only via per-clone .git/info/exclude).
+*handoff-NOW.md
