@@ -1,0 +1,30 @@
+{
+  "manifest_label": "risala-qayrawani-2026-09-14",
+  "target_corpus_label": "Al-Risāla (Ibn Abī Zayd al-Qayrawānī, foundational Mālikī primer / matn — the standard Mālikī parallel to al-Qudūrī)",
+  "sources": [
+    {
+      "adapter": "openiti",
+      "text_uri": "0386IbnAbiZaydQayrawani.Risala",
+      "edition_uri": "JK000171-ara1"
+    },
+    {
+      "adapter": "openiti",
+      "text_uri": "0386IbnAbiZaydQayrawani.Risala",
+      "edition_uri": "Shamela0011373-ara1"
+    }
+  ],
+  "attestation": {
+    "require_cross_attest": true,
+    "primary_source_idx": 0
+  },
+  "juridical_text": {
+    "text_name": "Al-Risāla",
+    "baab_or_section": "Full work",
+    "baab_order": 30,
+    "author_name": "ʿAbd Allāh ibn Abī Zayd al-Qayrawānī al-Mālikī",
+    "author_death_hijri": 386,
+    "author_death_gregorian": 996,
+    "madhab": "maliki",
+    "dalil_strength": "primer_juridical"
+  }
+}

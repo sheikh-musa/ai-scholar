@@ -53,6 +53,12 @@ CLAUDE_ENV = {
     "SHELL": os.environ.get("SHELL", ""),
     "LANG": os.environ.get("LANG", ""),
 }
+# Forward CLI auth when present. subprocess.run(env=CLAUDE_ENV) *replaces* the
+# environment, so a Max-plan OAuth token (or API key) set in the parent shell
+# must be whitelisted explicitly or the CLI subprocess reports "Not logged in".
+for _auth_var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
+    if os.environ.get(_auth_var):
+        CLAUDE_ENV[_auth_var] = os.environ[_auth_var]
 DEFAULT_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
