@@ -32,9 +32,27 @@ QUERY_EXPANSIONS = {
     "sawm": "fasting",
     "siyam": "fasting",
     "saum": "fasting",
-    "wudu": "ablution",
-    "wuduʾ": "ablution",
-    "wuḍūʾ": "ablution",
+    # Wuḍūʾ family — enriched 2026-09-14 after Musa's live "differences in wudhu
+    # between shafii maliki and hanafi" (op#20455) punted: (a) the bot spelling
+    # "wudhu" was absent from this map, so NO English anchor was appended and
+    # bge-m3 drifted onto the school-name tokens — the top hit was Qudūrī's
+    # shafīʿ/pre-emption chunk (a lexical collision between "shafi'" the
+    # pre-emptor and "shāfiʿī" the school) at cosine 0.44, everything below the
+    # 0.50 gate → punt; (b) even the canonical "wudu" → "ablution" anchor was too
+    # thin, topping out at 0.48 (Qudūrī's core wuḍūʾ farḍ/nullifier chunk 1 sat
+    # at 0.476, just under the gate). Enriching to the full wuḍūʾ vocabulary
+    # (same multi-term pattern as the sahw/talaq families) lifts the Ḥanafī,
+    # Shāfiʿī AND Mālikī wuḍūʾ chapters to 0.69–0.75 (10 chunks clear the gate).
+    # INTERSECTION-ONLY: every term below occurs in the juridical_translations
+    # text of Qudūrī / Nihāyat / Safīnat / Risāla.
+    "wudu": "ablution wuduʾ ritual purification washing the face hands arms elbows wiping the head feet ankles obligatory integrals farḍ nullifiers of ablution",
+    "wuduʾ": "ablution wuduʾ ritual purification washing the face hands arms elbows wiping the head feet ankles obligatory integrals farḍ nullifiers of ablution",
+    "wuḍūʾ": "ablution wuduʾ ritual purification washing the face hands arms elbows wiping the head feet ankles obligatory integrals farḍ nullifiers of ablution",
+    "wudhu": "ablution wuduʾ ritual purification washing the face hands arms elbows wiping the head feet ankles obligatory integrals farḍ nullifiers of ablution",
+    "wudoo": "ablution wuduʾ ritual purification washing the face hands arms elbows wiping the head feet ankles obligatory integrals farḍ nullifiers of ablution",
+    "wuduu": "ablution wuduʾ ritual purification washing the face hands arms elbows wiping the head feet ankles obligatory integrals farḍ nullifiers of ablution",
+    "wudu'": "ablution wuduʾ ritual purification washing the face hands arms elbows wiping the head feet ankles obligatory integrals farḍ nullifiers of ablution",
+    "wuzu": "ablution wuduʾ ritual purification washing the face hands arms elbows wiping the head feet ankles obligatory integrals farḍ nullifiers of ablution",
     "ghusl": "ritual bath",
     "tayammum": "dry ablution",
     "salah": "prayer",
@@ -232,7 +250,7 @@ def _cosine(a: list, b) -> float:
 
 # Stamped into the evidence-audit record so every fiqh retrieval is reproducible
 # (CAI-RESP-220 constraint). Bump RETRIEVER_VERSION on any ranking-affecting change.
-RETRIEVER_VERSION = "fiqh-semantic-v3-rpc-rerank-2026-06-13"
+RETRIEVER_VERSION = "fiqh-semantic-v4-rpc-rerank-wudu-expand-2026-09-14"
 RERANK_MODEL = "bge-reranker-v2-m3"
 _CANDIDATE_POOL = 40
 
