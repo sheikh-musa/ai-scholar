@@ -70,13 +70,25 @@ def supa(method, path, payload=None, prefer=None):
     return http(method, f"{SUPABASE_URL}{path}", payload, headers)
 
 
-def embed_batch(texts):
-    return http(
-        "POST",
-        f"{ENCODER_URL}/embed",
-        {"inputs": texts},
-        {"Content-Type": "application/json"},
-    )["embeddings"]
+def embed_batch(texts, attempts=4):
+    # The local encoder is CPU-only (an MPS-targeted service running on the Linux
+    # host) and slow (~0.05s/char), so a large chunk can brush the socket
+    # timeout. Retry with backoff instead of letting one slow/blipped call kill
+    # a multi-hour resumable run.
+    last = None
+    for i in range(attempts):
+        try:
+            return http(
+                "POST",
+                f"{ENCODER_URL}/embed",
+                {"inputs": texts},
+                {"Content-Type": "application/json"},
+            )["embeddings"]
+        except Exception as e:  # noqa: BLE001 — transient encoder timeout/blip
+            last = e
+            import time as _t
+            _t.sleep(2 * (i + 1))
+    raise RuntimeError(f"embed failed after {attempts} attempts: {type(last).__name__}: {last}")
 
 
 def encoder_sha():
