@@ -84,6 +84,33 @@ def encoder_sha():
     return h.get("model_sha") or "bge-m3-unpinned"
 
 
+def existing_chunk_indexes(juridical_text_id):
+    """Chunk indexes already embedded for a text — used to RESUME (skip work
+    already done) so a re-run after a crash/OOM is idempotent and cheap."""
+    got = supa(
+        "GET",
+        f"/rest/v1/juridical_embeddings?select=chunk_index&juridical_text_id=eq.{juridical_text_id}",
+    ) or []
+    return {g["chunk_index"] for g in got}
+
+
+def insert_rows(rows):
+    """Incremental upsert. return=minimal keeps the response (and our memory)
+    small — the old code used return=representation and accumulated EVERY
+    vector + the echoed rows before a single POST, which OOM-killed the process
+    and zeroed the run. resolution=merge-duplicates makes re-runs idempotent on
+    the (juridical_text_id, chunk_index) composite PK."""
+    if not rows:
+        return 0
+    supa(
+        "POST",
+        "/rest/v1/juridical_embeddings",
+        rows,
+        prefer="return=minimal,resolution=merge-duplicates",
+    )
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--language", default="en",
@@ -126,44 +153,71 @@ def main():
     # Per-chunk embedding (Phase 3 schema migration 20260511_001 enabled this).
     # Each chunk → its own juridical_embeddings row with chunk_index + chunk_text.
     # Composite PK (juridical_text_id, chunk_index) allows N rows per text.
+    #
+    # INCREMENTAL + RESUMABLE (hardened 2026-09-16, op#20626): embed and INSERT
+    # one text at a time, flushing every INSERT_BATCH rows with return=minimal,
+    # and skipping chunk_indexes already present (resume). The prior version
+    # accumulated every vector for every text into one list then did a single
+    # return=representation POST — that OOM-killed the process and zeroed the
+    # run. Now a crash/OOM loses at most one in-flight sub-batch, and re-running
+    # continues where it stopped.
     BATCH = int(os.environ.get("EMBED_BATCH", "8"))
+    INSERT_BATCH = int(os.environ.get("INSERT_BATCH", "50"))
     now = datetime.now(timezone.utc).isoformat()
-    payloads = []
+
+    total_inserted = 0
+    total_skipped = 0
     for r in rows:
         text = r[text_field]
         chunks = chunk_text(text)
+        # Resolve juridical_text_id: english path has explicit FK, arabic path uses row id directly
+        juridical_text_id = r.get("juridical_text_id") or r["id"]
         if not chunks:
             print(f"  skip {r[id_field][:8]}: no chunks", file=sys.stderr)
             continue
-        chunk_vecs: list = []
-        for i in range(0, len(chunks), BATCH):
-            chunk_vecs.extend(embed_batch(chunks[i : i + BATCH]))
-        # Resolve juridical_text_id: english path has explicit FK, arabic path uses row id directly
-        juridical_text_id = r.get("juridical_text_id") or r["id"]
-        for idx, (chunk, vec) in enumerate(zip(chunks, chunk_vecs)):
-            payloads.append({
-                "juridical_text_id": juridical_text_id,
-                "chunk_index": idx,
-                "chunk_text": chunk,
-                "embedding": vec,
-                "embedding_model": ENCODER_MODEL,
-                "encoder_sha": enc_sha,
-                "corpus_version": CORPUS_VERSION,
-                "embedded_source_hash": hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
-                "source_token_count": len(chunk.split()),
-                "created_at": now,
-                "updated_at": now,
-            })
-        print(f"  {r[id_field][:8]}: {len(chunks)} chunks queued")
 
-    if args.dry_run:
-        print("dry-run; first payload preview:")
-        sample = {**payloads[0], "embedding": f"<vec dim={len(payloads[0]['embedding'])}>"}
-        print(json.dumps(sample, indent=2))
-        return 0
+        existing = set() if args.dry_run else existing_chunk_indexes(juridical_text_id)
+        todo = [(idx, c) for idx, c in enumerate(chunks) if idx not in existing]
+        if not todo:
+            print(f"  {r[id_field][:8]}: all {len(chunks)} chunks already embedded — skip")
+            total_skipped += len(chunks)
+            continue
 
-    res = supa("POST", "/rest/v1/juridical_embeddings", payloads, prefer="return=representation")
-    print(f"inserted {len(res) if res else 0} rows into juridical_embeddings")
+        buf: list = []
+        inserted_here = 0
+        for i in range(0, len(todo), BATCH):
+            sub = todo[i : i + BATCH]
+            vecs = embed_batch([c for _, c in sub])
+            for (idx, chunk), vec in zip(sub, vecs):
+                buf.append({
+                    "juridical_text_id": juridical_text_id,
+                    "chunk_index": idx,
+                    "chunk_text": chunk,
+                    "embedding": vec,
+                    "embedding_model": ENCODER_MODEL,
+                    "encoder_sha": enc_sha,
+                    "corpus_version": CORPUS_VERSION,
+                    "embedded_source_hash": hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
+                    "source_token_count": len(chunk.split()),
+                    "created_at": now,
+                    "updated_at": now,
+                })
+            if args.dry_run:
+                print("dry-run; first payload preview:")
+                sample = {**buf[0], "embedding": f"<vec dim={len(buf[0]['embedding'])}>"}
+                print(json.dumps(sample, indent=2))
+                print(f"(would embed {len(todo)} new chunks for {r[id_field][:8]}, "
+                      f"{len(existing)} already present)")
+                return 0
+            if len(buf) >= INSERT_BATCH:
+                inserted_here += insert_rows(buf)
+                buf = []
+        inserted_here += insert_rows(buf)
+        total_inserted += inserted_here
+        print(f"  {r[id_field][:8]}: embedded {inserted_here} new chunks "
+              f"({len(existing)} pre-existing, {len(chunks)} total)")
+
+    print(f"done: inserted {total_inserted} rows, skipped {total_skipped} pre-existing")
     return 0
 
 

@@ -53,12 +53,20 @@ CLAUDE_ENV = {
     "SHELL": os.environ.get("SHELL", ""),
     "LANG": os.environ.get("LANG", ""),
 }
-# Forward CLI auth when present. subprocess.run(env=CLAUDE_ENV) *replaces* the
-# environment, so a Max-plan OAuth token (or API key) set in the parent shell
-# must be whitelisted explicitly or the CLI subprocess reports "Not logged in".
-for _auth_var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
-    if os.environ.get(_auth_var):
-        CLAUDE_ENV[_auth_var] = os.environ[_auth_var]
+# Forward ONLY the Max-plan OAuth token. subprocess.run(env=CLAUDE_ENV)
+# *replaces* the environment, so the token set in the parent shell must be
+# whitelisted explicitly or the CLI subprocess reports "Not logged in".
+#
+# Deliberately do NOT forward ANTHROPIC_API_KEY here: when both an OAuth token
+# and an API key are visible, the Claude CLI bills the API key (pay-per-token)
+# in preference to the Max subscription — and this repo's key has no credit
+# balance, so every CLI call died with "Credit balance is too low" (rc=1). That
+# short stderr (<50 chars) was then mis-read as a silent throttle, so the whole
+# run wedged in backoff. The --backend api path reads ANTHROPIC_API_KEY straight
+# from os.environ (module global below), not from CLAUDE_ENV, so excluding it
+# here keeps the CLI on Max billing without breaking the opt-in API path.
+if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+    CLAUDE_ENV["CLAUDE_CODE_OAUTH_TOKEN"] = os.environ["CLAUDE_CODE_OAUTH_TOKEN"]
 DEFAULT_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
