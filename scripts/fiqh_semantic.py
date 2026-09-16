@@ -250,9 +250,15 @@ def _cosine(a: list, b) -> float:
 
 # Stamped into the evidence-audit record so every fiqh retrieval is reproducible
 # (CAI-RESP-220 constraint). Bump RETRIEVER_VERSION on any ranking-affecting change.
-RETRIEVER_VERSION = "fiqh-semantic-v4-rpc-rerank-wudu-expand-2026-09-14"
+RETRIEVER_VERSION = "fiqh-semantic-v5-rerank-topn-madhab-2026-09-16"
 RERANK_MODEL = "bge-reranker-v2-m3"
 _CANDIDATE_POOL = 40
+# Rerank only the top-N candidates by cosine, not the whole pool. The
+# cross-encoder is CPU-bound; scoring all 40 blew past the inline budget on this
+# host so the reordering silently never applied (rerank:null in prod, op#20470).
+# 12 finishes within budget, so the reranker ACTUALLY engages.
+RERANK_TOP_N = int(os.environ.get("FIQH_RERANK_TOP_N", "12"))
+RERANK_TIMEOUT = float(os.environ.get("FIQH_RERANK_TIMEOUT_SEC", "12.0"))
 
 
 def _retrieval_meta(path: str, rerank_applied: bool, limit: int, cap: int) -> dict:
@@ -397,18 +403,28 @@ def search_semantic(
     # semantic-only ordering if the reranker is unavailable.
     rerank_applied = False
     ordering = [(sem, sem, row) for sem, row in cands]  # (order_key, sem, row)
-    if rerank:
-        passages = [(row["chunk_text"] or "")[:1500] for _, row in cands]
-        # Tight timeout: this runs inline in the bot's reply path, so a hung
-        # reranker must degrade to semantic-only ordering fast, not stall the DM.
-        scores = _rerank(query, passages, timeout=8.0)
-        if scores is not None and len(scores) == len(cands):
-            ordering = [
-                (0.6 * float(s) + 0.4 * sem, sem, row)
-                for (sem, row), s in zip(cands, scores)
-            ]
+    if rerank and cands:
+        # Score only the top-N by cosine (cands is cosine-desc from the RPC /
+        # brute-force). The reranked head sorts by the combined score; the
+        # cosine-sorted tail keeps its order beneath it. This keeps the inline
+        # cross-encoder call small enough to finish in budget instead of timing
+        # out and silently degrading to cosine-only (op#20470).
+        head = cands[:RERANK_TOP_N]
+        passages = [(row["chunk_text"] or "")[:1200] for _, row in head]
+        scores = _rerank(query, passages, timeout=RERANK_TIMEOUT)
+        if scores is not None and len(scores) == len(head):
+            reranked_head = sorted(
+                ((0.6 * float(s) + 0.4 * sem, sem, row)
+                 for (sem, row), s in zip(head, scores)),
+                key=lambda t: t[0], reverse=True,
+            )
+            tail = [(sem, sem, row) for sem, row in cands[RERANK_TOP_N:]]
+            ordering = reranked_head + tail
             rerank_applied = True
-    ordering.sort(key=lambda t: t[0], reverse=True)
+        else:
+            ordering.sort(key=lambda t: t[0], reverse=True)
+    else:
+        ordering.sort(key=lambda t: t[0], reverse=True)
 
     # Per-text_id-diversified top-K: walk in (reranked) order, take up to
     # max_per_text_id from any single juridical_text_id. Guard kept, not
@@ -431,7 +447,7 @@ def search_semantic(
     in_clause = "(" + ",".join(text_ids) + ")"
     juridical_texts = _supa(
         "GET",
-        f"/rest/v1/juridical_texts?select=id,baab_or_section,author_name,text_name&id=in.{in_clause}",
+        f"/rest/v1/juridical_texts?select=id,baab_or_section,author_name,text_name,madhab&id=in.{in_clause}",
     ) or []
     text_meta = {t["id"]: t for t in juridical_texts}
 
@@ -451,6 +467,7 @@ def search_semantic(
         results.append({
             "id": tid,                # F-2: juridical_text_id for retrieval_ids audit
             "baab": meta.get("baab_or_section", "?"),
+            "madhab": meta.get("madhab"),   # school of this matn — drives madhab-aware synthesis
             "translator": tr.get("translator_name", "?"),
             "source_work": tr.get("translation_source_work", meta.get("text_name", "?")),
             "edition": tr.get("edition_label", ""),

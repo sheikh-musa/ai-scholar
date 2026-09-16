@@ -665,12 +665,14 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
     results = []
     for r in rows:
         baab = "?"
+        madhab = None
         jt_id = r.get("juridical_text_id")
         try:
             if jt_id:
-                texts = supabase_get(f"juridical_texts?id=eq.{jt_id}&select=baab_or_section,author_name,text_name")
+                texts = supabase_get(f"juridical_texts?id=eq.{jt_id}&select=baab_or_section,author_name,text_name,madhab")
                 if texts:
                     baab = texts[0].get("baab_or_section", "?")
+                    madhab = texts[0].get("madhab")
         except Exception:
             pass
         full_text = r.get("translation_text") or ""
@@ -678,6 +680,7 @@ def lookup_fiqh(keywords_query: str, limit: int = 3) -> dict:
         results.append({
             "id": jt_id,                # F-2: juridical_text_id for retrieval_ids audit
             "baab": baab,
+            "madhab": madhab,           # school of this matn — madhab-aware synthesis
             "translator": r.get("translator_name", "?"),
             "source_work": r.get("translation_source_work", "?"),
             "edition": r.get("edition_label", ""),
@@ -1207,6 +1210,24 @@ STOP_WORDS = {"what", "does", "the", "quran", "say", "about", "islam", "islamic"
               "and", "to", "for", "it", "this", "that", "can", "do", "please",
               "explain", "inner", "dimensions", "meaning", "deep", "deeper",
               "hadith", "sunnah", "prophet", "pbuh", "any", "some"}
+
+# Words that scaffold a COMPARATIVE / madhhab question but are not its topic.
+# They are dropped ONLY from the cross-domain (Quran/tafsir/hadith) FTS key —
+# never from the fiqh semantic path, which reads the full question. For a query
+# like "differences in wudhu between shafii maliki and hanafi" the word
+# "differences" otherwise pulls generic theological "differ" verses (Q 2:213,
+# 16:124) and the school names either miss or collide (shafii ~ shafīʿ the
+# pre-emptor), burying the actual topic ("wudhu"). Keeping them out lets the
+# cross-domain FTS key on the real subject. General relevance hygiene, not a
+# per-word spelling patch (op#20470 / #40414).
+CROSS_DOMAIN_META_WORDS = {
+    "difference", "differences", "differ", "differing", "different", "differs",
+    "compare", "comparison", "comparing", "versus", "contrast", "contrasts",
+    "distinguish", "distinction", "between", "among", "vs",
+    "shafii", "shafi", "shafie", "shafiʿi", "hanafi", "hanafie", "maliki",
+    "maliki", "hanbali", "hanbalite", "madhhab", "madhab", "madhabs",
+    "madhahib", "madhhabs", "mazhab", "school", "schools",
+}
 
 # --- Session memory ---
 SESSION_TTL = 1800  # 30 minutes
@@ -2271,8 +2292,15 @@ def gather_context(question, meta=None):
 
     # --- 5. FTS searches (Quran + Hadith) ---
     if words and _ctx_size(context_parts) < MAX_CONTEXT:
-        # Build a search query from keywords
-        fts_query = " OR ".join(words[:4])
+        # Build the cross-domain (Quran/tafsir/hadith) FTS key from TOPICAL words
+        # only — drop comparison scaffolding + school names (CROSS_DOMAIN_META_WORDS)
+        # so a "differences between madhāhib" question keys on its subject instead
+        # of pulling theological "differ" verses (#40414). Fiqh retrieval below is
+        # untouched — it reads the full question. Fall back to the raw words if
+        # filtering would empty the key (e.g. a bare "shafi'i vs hanafi" with no
+        # topic term).
+        topical_words = [w for w in words if w not in CROSS_DOMAIN_META_WORDS]
+        fts_query = " OR ".join((topical_words or words)[:4])
 
         # Quran FTS (if no Quran context yet)
         has_quran = any(k in p for p in context_parts for k in ("VERSE", "TOPIC", "COUNT", "SURAH"))
@@ -2523,15 +2551,27 @@ def gather_context(question, meta=None):
                 entries.append(
                     f"Source: {hit['source_work']}\n"
                     f"Chapter: {hit['baab']}\n"
+                    f"School (madhhab): {(hit.get('madhab') or 'unspecified')}\n"
                     f"Translator: {hit['translator']} ({hit['edition']})\n"
                     f"Tier: {hit['tier']}\n"
                     f"Passage:\n{snippet}"
                 )
+            # Header is madhhab-NEUTRAL: the corpus now spans Ḥanafī (al-Qudūrī,
+            # Nūr al-Īḍāḥ), Mālikī (al-Risāla) and Shāfiʿī (Safīnat, Nihāyat)
+            # matns, and a single block may carry several schools at once. Each
+            # entry declares its own School field; the synthesis prompt attributes
+            # per-passage and never relabels one school's matn as another's.
+            madhabs_present = sorted({(h.get("madhab") or "unspecified")
+                                      for h in fiqh_data["results"]})
             context_parts.append(
-                "FIQH MATCHED PASSAGES (Shafi'i matn — Safīnat al-Najā / al-Marbūqī tr.; "
-                "RETRIEVE-ONLY echo. Compose-layer synthesis FORBIDDEN per C4 + INV-7 "
-                "paired-scholar gate. Bot returns matn passages verbatim with attribution; "
-                "user must consult qualified Shafi'i scholar for application to their case.):\n\n" +
+                "FIQH MATCHED PASSAGES (juridical matn from the ingested primers; "
+                f"schools present: {', '.join(madhabs_present)}. Each passage is "
+                "labelled with its own School (madhhab) — attribute to THAT school, "
+                "never relabel it. RETRIEVE-ONLY echo. Compose-layer synthesis "
+                "FORBIDDEN per C4 + INV-7 paired-scholar gate: quote matn verbatim "
+                "with attribution, do NOT issue a ruling; the user must consult a "
+                "qualified scholar of the relevant school for application to their "
+                "case.):\n\n" +
                 "\n\n---\n\n".join(entries)
             )
 
@@ -2915,16 +2955,30 @@ RULES:
   Say plainly that the corpus doesn't carry material on this specific point and
   stop; never pad an answer with unrelated matn/tafsir just because it matched.
 - WHENEVER a "FIQH MATCHED PASSAGES" block is present AND on-topic per the gate
-  above, you MUST surface the matn passage in your response. Do not omit or
-  summarize it — quote VERBATIM with full attribution: "Safīnat al-Najā
-  (<Chapter>, al-Marbūqī tr., al-inaam.com 2009)" where <Chapter> is the baab
-  name from the FIQH MATCHED PASSAGES block. The matn is the Shafi'i school's specific
-  application of higher-tier evidence (Quran/hadith); both should be presented
-  side-by-side when relevant — Quran/hadith establish the principle, the matn
-  shows the school's juristic framing. Do NOT synthesize a new ruling from
-  these passages. After each matn quotation, append:
-  "This passage is from the Shafi'i primer for reference; consult a qualified
-  scholar for application to your specific situation."
+  above, you MUST surface the matn passage(s) in your response. Do not omit or
+  summarize — quote VERBATIM with full attribution built from the Source,
+  Chapter, School (madhhab) and Translator fields given for THAT passage, e.g.
+  "Mukhtaṣar al-Qudūrī (Kitāb al-Ṭahāra, Ḥanafī)" or "Safīnat al-Najā
+  (<Chapter>, Shāfiʿī, al-Marbūqī tr.)". Attribute each passage to the school in
+  ITS OWN "School (madhhab)" field — NEVER relabel a Ḥanafī or Mālikī matn as
+  Shāfiʿī, or vice versa. Quran/hadith establish the principle; the matn shows a
+  school's juristic framing — present them side by side when relevant. Do NOT
+  synthesize a new ruling from these passages. After each matn quotation, append:
+  "This passage is from the <school> primer for reference; consult a qualified
+  scholar for application to your specific situation." (fill <school> from the
+  passage's School field; if unspecified, write "juridical").
+- COMPARATIVE MADHHAB QUESTIONS (differences between schools): when the question
+  asks how the schools DIFFER on a point — e.g. "differences in wuḍūʾ between
+  Shāfiʿī, Mālikī and Ḥanafī" — and the FIQH MATCHED PASSAGES block carries
+  passages from MORE THAN ONE school, ASSEMBLE the comparison: state each
+  school's position on the asked point (arkān / farāʾiḍ / wājibāt / nawāqiḍ,
+  etc.) FROM ITS OWN matn, attributed per school, and surface the points where
+  they diverge. The comparison IS the per-school matn read side by side — do NOT
+  answer from one school's matn and then claim the corpus lacks the comparison.
+  Stay DESCRIPTIVE: report what each school holds and where they differ; do NOT
+  issue a ruling on which view is correct (that stays behind the scholar gate).
+  If one school genuinely has no on-topic matn passage retrieved, name that
+  school as the gap rather than punting the whole comparison.
 - MACHINE-TRANSLATION GUARD: when a matn passage's Tier (from the FIQH MATCHED
   PASSAGES block) is "ai-generated" — i.e. an auto/Claude/OpenITI translation, not
   a human-vetted rendering — you MUST additionally flag the WORDING as unverified.
@@ -4023,13 +4077,15 @@ def main():
                                     entries.append(
                                         f"Source: {hit['source_work']}\n"
                                         f"Chapter: {hit['baab']}\n"
+                                        f"School (madhhab): {(hit.get('madhab') or 'unspecified')}\n"
                                         f"Translator: {hit['translator']} ({hit['edition']})\n"
                                         f"Tier: {hit['tier']}\n"
                                         f"Passage:\n{hit['text']}"
                                     )
                                 context += (
-                                    "\n\n---\n\nFIQH MATCHED PASSAGES (followup-fresh — Shafi'i matn; "
-                                    "RETRIEVE-ONLY echo per C4 + INV-7):\n\n"
+                                    "\n\n---\n\nFIQH MATCHED PASSAGES (followup-fresh — juridical "
+                                    "matn, each labelled with its own School; attribute per-passage, "
+                                    "never relabel. RETRIEVE-ONLY echo per C4 + INV-7):\n\n"
                                     + "\n\n---\n\n".join(entries)
                                 )
                     else:
