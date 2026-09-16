@@ -1,0 +1,30 @@
+{
+  "manifest_label": "nur-al-idah-2026-09-14",
+  "target_corpus_label": "Nūr al-Īḍāḥ (Ḥasan ibn ʿAmmār al-Shurunbulānī, ḥanafī matn — second foundational Hanafi primer alongside al-Qudūrī, the base matn of Marāqī al-Falāḥ)",
+  "sources": [
+    {
+      "adapter": "openiti",
+      "text_uri": "1069IbnCammarShurunbulali.NurIdah",
+      "edition_uri": "JK000284-ara1"
+    },
+    {
+      "adapter": "openiti",
+      "text_uri": "1069IbnCammarShurunbulali.NurIdah",
+      "edition_uri": "ShamAY0034214-ara1"
+    }
+  ],
+  "attestation": {
+    "require_cross_attest": true,
+    "primary_source_idx": 0
+  },
+  "juridical_text": {
+    "text_name": "Nūr al-Īḍāḥ",
+    "baab_or_section": "Full work",
+    "baab_order": 40,
+    "author_name": "Ḥasan ibn ʿAmmār ibn ʿAlī al-Shurunbulānī al-Ḥanafī",
+    "author_death_hijri": 1069,
+    "author_death_gregorian": 1659,
+    "madhab": "hanafi",
+    "dalil_strength": "primer_juridical"
+  }
+}
