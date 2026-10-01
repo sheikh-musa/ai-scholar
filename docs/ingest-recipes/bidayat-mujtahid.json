@@ -20,11 +20,11 @@
   "juridical_text": {
     "text_name": "Bidāyat al-Mujtahid wa Nihāyat al-Muqtaṣid",
     "baab_or_section": "Full work",
-    "baab_order": null,
+    "baab_order": 60,
     "author_name": "Abū al-Walīd Muḥammad ibn Aḥmad ibn Rushd al-Ḥafīd (Ibn Rushd al-Ḥafīd, \"Averroes\")",
     "author_death_hijri": 595,
     "author_death_gregorian": 1198,
-    "madhab": "maliki",
+    "madhab": "comparative",
     "dalil_strength": "primer_juridical"
   }
 }
