@@ -1,0 +1,21 @@
+-- ledger: silo=tscuymavysscrvoberrr
+--
+-- Add 'comparative' to the madhab_label enum (juridical_texts.madhab).
+--
+-- Bidayat al-Mujtahid (op#24450) is explicitly a 4-madhhab comparative/muqaran
+-- survey work — it names Hanafi/Maliki/Shafi'i positions side by side per
+-- masʾala. Tagging it with a single school (it was "maliki", matching its
+-- author's own training) risks the synthesis prompt's "attribute to THAT
+-- school, never relabel it" instruction causing other schools' positions
+-- within the same passage to be mislabeled as Maliki — the same bug class
+-- previously fixed in commit efa4370 ("stop mislabeling matn as Shafi'i").
+-- Confirmed independently by op#24412 cc-quality review (PR #3).
+--
+-- ADD VALUE is additive/backward-compatible: only juridical_texts.madhab uses
+-- this enum (verified via information_schema before writing this migration),
+-- no existing row changes, no other table affected.
+--
+-- Note: the madhab_label enum itself predates the tracked migration history
+-- (not found in any prior migration file) — this is the first tracked change
+-- to it.
+ALTER TYPE madhab_label ADD VALUE IF NOT EXISTS 'comparative';

@@ -2567,7 +2567,11 @@ def gather_context(question, meta=None):
                 "FIQH MATCHED PASSAGES (juridical matn from the ingested primers; "
                 f"schools present: {', '.join(madhabs_present)}. Each passage is "
                 "labelled with its own School (madhhab) — attribute to THAT school, "
-                "never relabel it. RETRIEVE-ONLY echo. Compose-layer synthesis "
+                "never relabel it. If a passage's School (madhhab) is 'comparative' "
+                "(a muqāran/multi-school survey work), do not attribute its content "
+                "to that label as a whole — identify and attribute each specific "
+                "ruling to the actual school the passage's own text names for it. "
+                "RETRIEVE-ONLY echo. Compose-layer synthesis "
                 "FORBIDDEN per C4 + INV-7 paired-scholar gate: quote matn verbatim "
                 "with attribution, do NOT issue a ruling; the user must consult a "
                 "qualified scholar of the relevant school for application to their "
@@ -2962,7 +2966,11 @@ RULES:
   "Mukhtaṣar al-Qudūrī (Kitāb al-Ṭahāra, Ḥanafī)" or "Safīnat al-Najā
   (<Chapter>, Shāfiʿī, al-Marbūqī tr.)". Attribute each passage to the school in
   ITS OWN "School (madhhab)" field — NEVER relabel a Ḥanafī or Mālikī matn as
-  Shāfiʿī, or vice versa. Quran/hadith establish the principle; the matn shows a
+  Shāfiʿī, or vice versa. EXCEPTION: a passage whose School (madhhab) field is
+  "comparative" (a muqāran/multi-school survey work) names multiple schools
+  within its own text — attribute each specific ruling in it to the actual
+  school the passage names for that ruling, not to "comparative" as a whole.
+  Quran/hadith establish the principle; the matn shows a
   school's juristic framing — present them side by side when relevant. Do NOT
   synthesize a new ruling from these passages. After each matn quotation, append:
   "This passage is from the <school> primer for reference; consult a qualified
@@ -4086,7 +4094,10 @@ def main():
                                 context += (
                                     "\n\n---\n\nFIQH MATCHED PASSAGES (followup-fresh — juridical "
                                     "matn, each labelled with its own School; attribute per-passage, "
-                                    "never relabel. RETRIEVE-ONLY echo per C4 + INV-7):\n\n"
+                                    "never relabel. If a passage's School (madhhab) is 'comparative' "
+                                    "(a muqāran/multi-school survey work), attribute each specific "
+                                    "ruling to the actual school its own text names for it, not to "
+                                    "'comparative' as a whole. RETRIEVE-ONLY echo per C4 + INV-7):\n\n"
                                     + "\n\n---\n\n".join(entries)
                                 )
                     else:

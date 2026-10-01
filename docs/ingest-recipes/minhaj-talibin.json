@@ -1,0 +1,30 @@
+{
+  "manifest_label": "minhaj-talibin-2026-10-02",
+  "target_corpus_label": "Minhāj al-Ṭālibīn (Abū Zakariyyā Yaḥyā ibn Sharaf al-Nawawī, shāfiʿī — the standard later-Shāfiʿī reference matn; base text of Mughnī al-Muḥtāj and Tuḥfat al-Muḥtāj). Fills the sujūd al-sahw (op#24412 #01) and ḥayḍ/istiḥāḍa (op#24412 #05/#06) corpus gaps.",
+  "sources": [
+    {
+      "adapter": "openiti",
+      "text_uri": "0676Nawawi.MinhajTalibin",
+      "edition_uri": "JK001168-ara1"
+    },
+    {
+      "adapter": "openiti",
+      "text_uri": "0676Nawawi.MinhajTalibin",
+      "edition_uri": "ShamAY0034248-ara1"
+    }
+  ],
+  "attestation": {
+    "require_cross_attest": true,
+    "primary_source_idx": 0
+  },
+  "juridical_text": {
+    "text_name": "Minhāj al-Ṭālibīn",
+    "baab_or_section": "Full work",
+    "baab_order": 50,
+    "author_name": "Abū Zakariyyā Yaḥyā ibn Sharaf al-Nawawī al-Shāfiʿī",
+    "author_death_hijri": 676,
+    "author_death_gregorian": 1277,
+    "madhab": "shafii",
+    "dalil_strength": "primer_juridical"
+  }
+}
