@@ -2806,8 +2806,9 @@ def _format_verse_answer(data):
 def _format_hadith_answer(h, col, num):
     """Format a lookup_hadith() result (or an honest not-found) as a deterministic answer."""
     if not h or h.get("error"):
-        # Honest not-found beats the generic timeout message. Bukhari #35 genuinely
-        # isn't in the corpus; numbering differs across editions (review #27).
+        # Honest not-found beats the generic timeout message. Numbering differs
+        # across editions (review #27); whatever's actually absent from the
+        # corpus gets this honest decline rather than a fabricated answer.
         return (f"I don't have {col.title()} #{num} in this corpus. Hadith numbering differs "
                 f"across editions (Khan / Fath al-Bari / Arabic combined), so a bare number is "
                 f"ambiguous. Tell me the book/chapter (e.g. Kitab al-Iman) or a phrase from the "
