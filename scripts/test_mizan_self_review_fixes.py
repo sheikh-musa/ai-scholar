@@ -90,10 +90,16 @@ check("Fix#1: keyed verse answer carries the quoted badge", ak is not None and "
 sa = mb.build_keyed_answer("tafsir of 2:255")
 check("Fix#1: explicit 2:255 routes to keyed verse answer", sa is not None and "2:255" in sa)
 
-# Bukhari 35 (the #33 timeout query) — genuinely absent → honest not-found (not None)
-b35 = mb.build_keyed_answer("Bukhari 35")
-check("Fix#1: 'Bukhari 35' (absent) → honest not-found, not a non-answer",
-      b35 is not None and "numbering" in b35.lower())
+# A number genuinely out of range → honest not-found (not None). Originally
+# this test used "Bukhari 35" (the #33 timeout query) as the absent example,
+# but the hadith backfill (op#20626) has since completed: Bukhari now has
+# 7,580 rows and #35 is a real, present hadith (Laylat al-Qadr prayer,
+# confirmed op#24412 msg #48355 investigation) — the old assertion was
+# failing because the corpus grew, not because of a regression. 99999 is
+# safely beyond Sahih al-Bukhari's real range (~7563) on any edition.
+b_absent = mb.build_keyed_answer("Bukhari 99999")
+check("Fix#1: 'Bukhari 99999' (absent) → honest not-found, not a non-answer",
+      b_absent is not None and "numbering" in b_absent.lower())
 
 # A present hadith → formatted answer with grade badge
 b1 = mb.build_keyed_answer("bukhari 4218")
