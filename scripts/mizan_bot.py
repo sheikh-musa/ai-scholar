@@ -2966,7 +2966,11 @@ RULES:
   "Mukhtaṣar al-Qudūrī (Kitāb al-Ṭahāra, Ḥanafī)" or "Safīnat al-Najā
   (<Chapter>, Shāfiʿī, al-Marbūqī tr.)". Attribute each passage to the school in
   ITS OWN "School (madhhab)" field — NEVER relabel a Ḥanafī or Mālikī matn as
-  Shāfiʿī, or vice versa. Quran/hadith establish the principle; the matn shows a
+  Shāfiʿī, or vice versa. EXCEPTION: a passage whose School (madhhab) field is
+  "comparative" (a muqāran/multi-school survey work) names multiple schools
+  within its own text — attribute each specific ruling in it to the actual
+  school the passage names for that ruling, not to "comparative" as a whole.
+  Quran/hadith establish the principle; the matn shows a
   school's juristic framing — present them side by side when relevant. Do NOT
   synthesize a new ruling from these passages. After each matn quotation, append:
   "This passage is from the <school> primer for reference; consult a qualified
@@ -4090,7 +4094,10 @@ def main():
                                 context += (
                                     "\n\n---\n\nFIQH MATCHED PASSAGES (followup-fresh — juridical "
                                     "matn, each labelled with its own School; attribute per-passage, "
-                                    "never relabel. RETRIEVE-ONLY echo per C4 + INV-7):\n\n"
+                                    "never relabel. If a passage's School (madhhab) is 'comparative' "
+                                    "(a muqāran/multi-school survey work), attribute each specific "
+                                    "ruling to the actual school its own text names for it, not to "
+                                    "'comparative' as a whole. RETRIEVE-ONLY echo per C4 + INV-7):\n\n"
                                     + "\n\n---\n\n".join(entries)
                                 )
                     else:
