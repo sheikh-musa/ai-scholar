@@ -12,7 +12,7 @@ import argparse
 import os
 import sys
 
-os.environ["MIZAN_BOT_TOKEN"] = os.environ.get("MIZAN_BOT_TOKEN", "offline-replay-unused")
+os.environ.setdefault("MIZAN_BOT_TOKEN", "offline-replay-unused")
 os.environ["MIZAN_TEST_MODE"] = "1"
 os.environ.setdefault("ENCODER_URL", "http://127.0.0.1:8080")
 os.environ.pop("ANTHROPIC_API_KEY", None)
