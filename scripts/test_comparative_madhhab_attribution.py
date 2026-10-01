@@ -20,6 +20,7 @@ content-accuracy spot check.
 """
 import os
 import sys
+import unicodedata
 
 os.environ.setdefault("MIZAN_BOT_TOKEN", "test-unused")
 os.environ["MIZAN_TEST_MODE"] = "1"
@@ -79,7 +80,11 @@ if __name__ == "__main__":
                          fallback_answer=build_keyed_answer(QUERY))
     print("\n--- ANSWER ---\n" + answer + "\n--- END ---\n")
 
-    lower = answer.lower()
+    # Strip Latin diacritics (e.g. "Ḥanafī" -> "hanafi") so transliteration
+    # variance doesn't fail a substring check that should pass.
+    stripped = unicodedata.normalize("NFKD", answer)
+    stripped = "".join(c for c in stripped if not unicodedata.combining(c))
+    lower = stripped.lower()
     check("mentions Malik", "malik" in lower)
     check("mentions Shafi'i", "shafi" in lower)
     check("mentions Hanafi", "hanaf" in lower)
