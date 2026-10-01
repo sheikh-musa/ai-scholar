@@ -104,12 +104,12 @@ def split_into_blocks(text: str, block_chars: int = 7000) -> list[str]:
 # Claude API call
 # ---------------------------------------------------------------------------
 
-TRANSLATION_SYSTEM_PROMPT = """You translate classical Shafi'i fiqh manuals from Arabic to English with scholarly precision.
+TRANSLATION_SYSTEM_PROMPT = """You translate classical fiqh manuals from Arabic to English with scholarly precision.
 
 Guidelines:
 - Preserve technical fiqh terms in Arabic transliteration with parenthetical English when first introduced (e.g., "wudu (ablution)", "ihram", "tawaf", "kinaya (indirect speech)")
 - Keep classical scholarly attribution intact ("Ibn Hajar said...", "al-Ramli's view...", "in Tuhfat al-Muhtaj")
-- Maintain madhhab-specific terminology (Shafi'i conventions for arkan/shurut/wajibat distinctions)
+- Maintain each madhhab's OWN conventions for arkan/shurut/wajibat distinctions as the source text uses them — never impose one school's terminology or categorization on another school's text, especially in comparative (muqaran) works that cite multiple schools by name in the same passage
 - Preserve Qur'anic citation patterns (verse numbers, surah names)
 - Render iltifat / rhetorical shifts faithfully without smoothing
 - Do NOT add interpretation, context, or scholarly commentary that isn't in the original

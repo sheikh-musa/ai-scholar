@@ -1,0 +1,30 @@
+{
+  "manifest_label": "bidayat-mujtahid-2026-10-02",
+  "target_corpus_label": "Bidāyat al-Mujtahid wa Nihāyat al-Muqtaṣid (Abū al-Walīd Muḥammad ibn Aḥmad ibn Rushd al-Ḥafīd / \"Averroes\", mālikī-authored but structured as a 4-madhhab comparative/muqāran fiqh work — explicitly states Ḥanafī, Mālikī, and Shāfiʿī positions side by side per masʾala). Fills the madhhab-comparative-wuḍūʾ corpus gap (op#24412 #00/#08).",
+  "sources": [
+    {
+      "adapter": "openiti",
+      "text_uri": "0595IbnRushdHafid.BidayatMujtahid",
+      "edition_uri": "JK000222-ara1"
+    },
+    {
+      "adapter": "openiti",
+      "text_uri": "0595IbnRushdHafid.BidayatMujtahid",
+      "edition_uri": "ShamAY0034220-ara1"
+    }
+  ],
+  "attestation": {
+    "require_cross_attest": true,
+    "primary_source_idx": 0
+  },
+  "juridical_text": {
+    "text_name": "Bidāyat al-Mujtahid wa Nihāyat al-Muqtaṣid",
+    "baab_or_section": "Full work",
+    "baab_order": null,
+    "author_name": "Abū al-Walīd Muḥammad ibn Aḥmad ibn Rushd al-Ḥafīd (Ibn Rushd al-Ḥafīd, \"Averroes\")",
+    "author_death_hijri": 595,
+    "author_death_gregorian": 1198,
+    "madhab": "maliki",
+    "dalil_strength": "primer_juridical"
+  }
+}
