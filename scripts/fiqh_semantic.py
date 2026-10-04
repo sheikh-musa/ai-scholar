@@ -12,6 +12,7 @@ re-ingests at sub-chapter granularity in Phase 3+.
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -20,7 +21,24 @@ from typing import Optional
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://tscuymavysscrvoberrr.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY", "")
 ENCODER_URL = os.environ.get("ENCODER_URL", "http://100.104.36.27:8080")
-ENCODER_TIMEOUT_SEC = float(os.environ.get("ENCODER_TIMEOUT_SEC", "5.0"))
+# op#48737: default was 5.0s, calibrated for the old Mac Studio GPU encoder.
+# Measured on the current CPU-only gzb encoder over 20 representative real
+# bayanQAbot queries (op#48737/#49168): p50=3.3s, p95=9.7s, but gzb's shared
+# 4-core host sees load spikes (8-18) independent of query length — one
+# 10-char query hit 39s purely from host contention. 30s covers the measured
+# p95 with ~3x margin; it will NOT eliminate every contention-spike timeout
+# (no fixed value can), but the fallback-to-FTS path is graceful and now
+# WARN-logged (_encode below) instead of silent.
+ENCODER_TIMEOUT_SEC = float(os.environ.get("ENCODER_TIMEOUT_SEC", "30.0"))
+# Cap on the TOTAL appended expansion text in _expand_query. A single
+# QUERY_EXPANSIONS entry can be ~90-140 chars (e.g. "wudhu", "sahwi"); a query
+# matching 2+ such terms would otherwise stack them uncapped. Measured impact
+# of expansion alone (holding host load constant) is a modest ~+2s for a
+# ~150-char addition — this cap keeps that bounded without losing the
+# relevance lift the expansions exist for (op#20455/op#20470 cosine-gate
+# fixes), which is why we cap rather than drop expansion entirely per
+# orch-console's "original query, or a CAPPED expansion" framing (msg #48737).
+QUERY_EXPANSION_MAX_CHARS = int(os.environ.get("QUERY_EXPANSION_MAX_CHARS", "150"))
 
 # bge-m3 ranks lexical overlap of transliterated Arabic terms strongly even
 # when semantically off-topic (e.g. "wājib" appears densely in the Salah
@@ -148,17 +166,44 @@ def _expand_query(q: str) -> str:
     """Append English equivalents for transliterated Arabic terms. Original
     query stays in place so lexical match is preserved if substrate uses
     transliteration too.
+
+    Capped at QUERY_EXPANSION_MAX_CHARS total appended text (op#48737): a
+    query matching 2+ QUERY_EXPANSIONS entries (each ~90-140 chars) would
+    otherwise stack them uncapped, compounding encode latency for no added
+    relevance benefit beyond the cap. Dedupes repeated matches (e.g. "wudhu"
+    appearing twice) rather than appending the same expansion string twice.
+
+    The cap is enforced per-expansion (skip a whole expansion if it doesn't
+    fit the remaining budget), never by slicing the joined string — a blind
+    slice lands mid-word almost every time, since every wudu-family variant
+    (op#20455) is exactly 146 chars and anything joined after it overflows a
+    150 cap by only a few characters (caught in cc-quality review, msg
+    #51081, reproduced on "what about wudhu and ghusl and sahwi" ending in
+    the severed fragment "...nullifiers of ablution rit").
     """
     if not q:
         return q
     extras: list = []
+    seen: set = set()
     for tok in q.lower().split():
         norm = tok.strip(".,;:!?\"'()[]")
-        if norm in QUERY_EXPANSIONS:
-            extras.append(QUERY_EXPANSIONS[norm])
-    if extras:
-        return q + " " + " ".join(extras)
-    return q
+        expansion = QUERY_EXPANSIONS.get(norm)
+        if expansion and expansion not in seen:
+            seen.add(expansion)
+            extras.append(expansion)
+    if not extras:
+        return q
+    budget = QUERY_EXPANSION_MAX_CHARS
+    kept: list = []
+    for expansion in extras:
+        needed = len(expansion) + (1 if kept else 0)  # +1 for the joining space
+        if needed > budget:
+            continue  # whole-expansion-or-skip: never truncate mid-word
+        kept.append(expansion)
+        budget -= needed
+    if not kept:
+        return q
+    return q + " " + " ".join(kept)
 
 
 def _http(method: str, url: str, payload=None, headers=None, timeout: float = 5.0):
@@ -209,7 +254,16 @@ def _fetch_all_embeddings() -> list:
 
 
 def _encode(query: str) -> Optional[list]:
-    """Returns 1024-dim vector or None if encoder unreachable / slow."""
+    """Returns 1024-dim vector or None if encoder unreachable / slow.
+
+    On failure, WARN-logs the reason + elapsed time + query length to stderr
+    (op#48737) — this is the call behind search_semantic's path='none'
+    fallback-to-FTS, and that fallback was silently hiding encoder timeouts
+    (msg #48733). A caller that only checks the return value still can't
+    tell "encoder down" from "no results"; this makes the failure visible in
+    the bot's own logs without changing the fail-soft behavior itself.
+    """
+    t0 = time.time()
     try:
         r = _http(
             "POST",
@@ -219,7 +273,14 @@ def _encode(query: str) -> Optional[list]:
             timeout=ENCODER_TIMEOUT_SEC,
         )
         return r["embeddings"][0]
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, KeyError, TypeError):
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, KeyError, TypeError) as e:
+        elapsed = time.time() - t0
+        print(
+            f"WARN fiqh_semantic._encode failed after {elapsed:.1f}s "
+            f"(timeout={ENCODER_TIMEOUT_SEC:.0f}s, query_len={len(query)}): "
+            f"{type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
         return None
 
 
@@ -379,6 +440,11 @@ def search_semantic(
     """
     qvec = _encode(_expand_query(query))
     if qvec is None:
+        # _encode() already WARN-logged the underlying reason (op#48737);
+        # this line is the point where that failure actually becomes a
+        # fallback-to-FTS decision, so log the decision itself too.
+        print(f"WARN fiqh_semantic.search_semantic: falling back to FTS "
+              f"(no embedding for query_len={len(query)})", file=sys.stderr)
         return {"results": [], "retrieval_meta": _retrieval_meta("none", False, limit, max_per_text_id)}
 
     # Candidate pool: server-side RPC (A) with brute-force fallback (B). The
@@ -389,7 +455,9 @@ def search_semantic(
         if cands is None:
             cands = _candidates_via_bruteforce(qvec, candidate_pool)
             path = "bruteforce"
-    except Exception:
+    except Exception as e:
+        print(f"WARN fiqh_semantic.search_semantic: candidate fetch failed, "
+              f"falling back to FTS: {type(e).__name__}: {e}", file=sys.stderr)
         return {"results": [], "retrieval_meta": _retrieval_meta("none", False, limit, max_per_text_id)}
     if not cands:
         return {"results": [], "retrieval_meta": _retrieval_meta(path, False, limit, max_per_text_id)}
