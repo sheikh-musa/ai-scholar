@@ -31,6 +31,27 @@ check("expansion is capped at QUERY_EXPANSION_MAX_CHARS",
 check("original query text is preserved verbatim at the start",
       expanded.startswith(long_query))
 
+# --- _expand_query: cap must never truncate mid-word (cc-quality msg #51081) ---
+# "wudhu"'s own expansion is 146 chars; adding "ghusl" (12) or "sahwi" (90)
+# overflows a 150 cap by a few chars either way — a blind combined[:150]
+# slice lands mid-word here almost every time. Each kept expansion must be
+# used WHOLE or not at all.
+overflow_query = "what about wudhu and ghusl and sahwi"
+expanded_overflow = fs._expand_query(overflow_query)
+appended_overflow = expanded_overflow[len(overflow_query) + 1:]
+wudhu_expansion = fs.QUERY_EXPANSIONS["wudhu"]
+ghusl_expansion = fs.QUERY_EXPANSIONS["ghusl"]
+sahwi_expansion = fs.QUERY_EXPANSIONS["sahwi"]
+check("overflowing expansion set is capped, not left uncapped",
+      len(appended_overflow) <= fs.QUERY_EXPANSION_MAX_CHARS)
+# Deterministic: wudhu (146c) fits the 150 budget; ghusl (+1 space+12c=159)
+# and sahwi (+1 space+90c=237) each overflow what's left (4c) and must be
+# skipped WHOLE, never partially appended. This is the exact fragment
+# cc-quality caught with the old blind-slice logic: "...ablution rit".
+check("appended text is exactly the one whole expansion that fits — no "
+      "partial fragment of a skipped expansion (e.g. no trailing 'rit')",
+      appended_overflow == wudhu_expansion)
+
 # --- _expand_query: dedup ---
 repeated_query = "wudhu and wudhu again, how is wudhu done"
 expanded_rep = fs._expand_query(repeated_query)

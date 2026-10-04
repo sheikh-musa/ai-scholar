@@ -172,6 +172,14 @@ def _expand_query(q: str) -> str:
     otherwise stack them uncapped, compounding encode latency for no added
     relevance benefit beyond the cap. Dedupes repeated matches (e.g. "wudhu"
     appearing twice) rather than appending the same expansion string twice.
+
+    The cap is enforced per-expansion (skip a whole expansion if it doesn't
+    fit the remaining budget), never by slicing the joined string — a blind
+    slice lands mid-word almost every time, since every wudu-family variant
+    (op#20455) is exactly 146 chars and anything joined after it overflows a
+    150 cap by only a few characters (caught in cc-quality review, msg
+    #51081, reproduced on "what about wudhu and ghusl and sahwi" ending in
+    the severed fragment "...nullifiers of ablution rit").
     """
     if not q:
         return q
@@ -185,8 +193,17 @@ def _expand_query(q: str) -> str:
             extras.append(expansion)
     if not extras:
         return q
-    combined = " ".join(extras)[:QUERY_EXPANSION_MAX_CHARS]
-    return q + " " + combined
+    budget = QUERY_EXPANSION_MAX_CHARS
+    kept: list = []
+    for expansion in extras:
+        needed = len(expansion) + (1 if kept else 0)  # +1 for the joining space
+        if needed > budget:
+            continue  # whole-expansion-or-skip: never truncate mid-word
+        kept.append(expansion)
+        budget -= needed
+    if not kept:
+        return q
+    return q + " " + " ".join(kept)
 
 
 def _http(method: str, url: str, payload=None, headers=None, timeout: float = 5.0):
