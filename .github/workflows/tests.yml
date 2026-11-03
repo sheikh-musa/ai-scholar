@@ -53,7 +53,8 @@ jobs:
             test_fts_relevance_floor.py \
             test_mizan_followup.py \
             test_tafsir_merge_dedup.py \
-            test_ayah_id_resolve.py; do
+            test_ayah_id_resolve.py \
+            test_map_paths.py; do
             echo "::group::$t"
             python3 "$t"
             echo "::endgroup::"

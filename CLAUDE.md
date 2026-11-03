@@ -10,6 +10,8 @@ ai-scholar is the backend for the **Al-Bayān** and **Al-Mīzān** bots — two 
 
 The corpus (6,236 ayat with Ibn Kathir + Al-Sa'di tafsir, hadith from Nawawi + Riyad al-Salihin, mutashabihat cross-references, asbab al-nuzul from Al-Wahidi) lives in Supabase project `tscuymavysscrvoberrr` — same project as the Wingmen orchestrator and hifz-companion.
 
+See `MAP.md` for the full repo map (layout, main flows, data, shared code, hazards, run/test/deploy) — start there to find code in one lookup, per op#35990.
+
 ## Session boot
 
 1. Read this file.
