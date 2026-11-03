@@ -25,12 +25,15 @@ python3 -m pip install --user requests python-dotenv   # one-time
 for t in \
   test_mizan_judge test_cli_failure_classification test_safety_classes \
   test_scholar_review_flag test_tafsir_verse_routing test_chat_state_persistence \
-  test_evidence_fallback test_fts_relevance_floor; do
+  test_evidence_fallback test_fts_relevance_floor test_map_paths; do
   python3 "scripts/$t.py"
 done
 ```
 
-All 8 are offline (no Supabase, no Claude CLI). A couple import `mizan_bot`, whose
+`test_map_paths.py` checks that every repo-relative path cited in `MAP.md` still
+exists, so the map can't silently rot as files move.
+
+All are offline (no Supabase, no Claude CLI). A couple import `mizan_bot`, whose
 only third-party import at load time is the local `*_semantic` modules; they
 resolve without the encoder service running.
 
